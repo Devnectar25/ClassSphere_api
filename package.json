@@ -1,0 +1,31 @@
+{
+  "name": "classsphere-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 4000",
+    "build": "next build",
+    "start": "next start -p 4000",
+    "lint": "eslint",
+    "db:migrate": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings database/migrate.ts",
+    "db:seed": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings database/migrate.ts --seed",
+    "test": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings --test tests/platform-integration.test.ts",
+    "db:dump": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings database/dump.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.10",
+    "@electric-sql/pglite-tools": "0.4.10",
+    "next": "16.4.0",
+    "pg": "^8.23.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.0",
+    "typescript": "^5"
+  }
+}
