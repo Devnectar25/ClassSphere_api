@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
-import { hashPassword } from '@/lib/auth';
+import { ACADEMY_TYPES, hashPassword } from '@/lib/auth';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
 
@@ -8,7 +8,6 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Academy Workspace, Settings & Provisioning API
  * Traceability: TDD Section 10.4, 11; PLT-005, PLT-006
  */
-const ACADEMY_TYPES = ['Tuition', 'Music', 'Sports', 'Dance', 'Arts', 'Test Prep', 'Language', 'Other'];
 const MAX_LOGO_BYTES = 512 * 1024;
 
 export async function GET(req: NextRequest) {
