@@ -20,7 +20,21 @@ build/
 
 # misc
 .DS_Store
+Thumbs.db
+desktop.ini
 *.pem
+
+# editors and local tool settings
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# logs, caches and temporary files
+*.log
+logs/
+.cache/
+*.tmp
+*.bak
 
 # debug
 npm-debug.log*
