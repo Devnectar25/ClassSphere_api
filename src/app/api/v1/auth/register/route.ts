@@ -27,13 +27,34 @@ export async function POST(req: NextRequest) {
         if (!academyName || !firstName || !lastName || !email || !phone || !password) {
             return fail(400, 'Validation Error', 'Please fill in all required fields.');
         }
-        if (!EMAIL.test(email)) return fail(400, 'Validation Error', 'Enter a valid email address.');
-        if (phone.replace(/\D/g, '').length < 8) return fail(400, 'Validation Error', 'Enter a valid mobile number.');
-        if (String(password).length < 8) return fail(400, 'Validation Error', 'Password must be at least 8 characters.');
+        if (academyName.length < 2) {
+            return fail(400, 'Validation Error', 'Academy name must be at least 2 characters.');
+        }
+        if (!/^[a-zA-Z\s'-]+$/.test(firstName)) {
+            return fail(400, 'Validation Error', 'First name can only contain letters.');
+        }
+        if (!/^[a-zA-Z\s'-]+$/.test(lastName)) {
+            return fail(400, 'Validation Error', 'Last name can only contain letters.');
+        }
+        if (!EMAIL.test(email)) {
+            return fail(400, 'Validation Error', 'Enter a valid email address.');
+        }
+        const phoneDigits = phone.replace(/\D/g, '');
+        if (/[a-zA-Z]/.test(phone) || phoneDigits.length < 10 || phoneDigits.length > 15) {
+            return fail(400, 'Validation Error', 'Enter a valid 10-to-15 digit mobile number.');
+        }
+        if (String(password).length < 8) {
+            return fail(400, 'Validation Error', 'Password must be at least 8 characters.');
+        }
+        if (!/[a-zA-Z]/.test(String(password)) || !/[0-9]/.test(String(password))) {
+            return fail(400, 'Validation Error', 'Password must include at least one letter and one number.');
+        }
         if (!ACADEMY_TYPES.includes(academyType)) {
             return fail(400, 'Validation Error', `Class category must be one of: ${ACADEMY_TYPES.join(', ')}.`);
         }
-        if (acceptTerms !== true) return fail(400, 'Validation Error', 'Please accept the Terms of Service and Privacy Policy.');
+        if (acceptTerms !== true) {
+            return fail(400, 'Validation Error', 'Please accept the Terms of Service and Privacy Policy.');
+        }
 
         const result = await callFn<{ tenantId: string }>('tenant.fn_tenant_register',
             academyName, academyType, planTier || null, `${firstName} ${lastName}`, email, phone, hashPassword(String(password)));
