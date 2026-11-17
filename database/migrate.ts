@@ -22,7 +22,10 @@ async function ensurePostgresDatabase(url: string) {
     const target = new URL(url);
     const name = decodeURIComponent(target.pathname.slice(1));
     target.pathname = '/postgres';
-    const admin = new pg.Client({ connectionString: target.toString() });
+    const admin = new pg.Client({
+        connectionString: target.toString(),
+        ssl: url.includes('supabase') ? { rejectUnauthorized: false } : undefined,
+    });
     await admin.connect();
     const { rowCount } = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [name]);
     if (!rowCount) {

@@ -25,7 +25,10 @@ export function databaseDir() {
 // Connects lazily so build workers that load route modules never open the database
 function database(): Database {
     global.__classSphereDb ??= process.env.DATABASE_URL
-        ? new Pool({ connectionString: process.env.DATABASE_URL })
+        ? new Pool({
+            connectionString: process.env.DATABASE_URL,
+            ssl: process.env.DATABASE_URL.includes('supabase') ? { rejectUnauthorized: false } : undefined,
+        })
         : new PGlite(databaseDir());
     return global.__classSphereDb;
 }
