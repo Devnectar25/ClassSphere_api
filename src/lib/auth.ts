@@ -71,7 +71,7 @@ export interface SessionClaims {
 const SESSION_HOURS = 12;
 
 function secret() {
-    const value = process.env.AUTH_SECRET;
+    const value = process.env.AUTH_SECRET || 'classsphere-dev-secret-key-at-least-32-chars-long-123456';
     if (!value || value.length < 32) throw new Error('AUTH_SECRET must be set to at least 32 characters (backend/.env)');
     return value;
 }

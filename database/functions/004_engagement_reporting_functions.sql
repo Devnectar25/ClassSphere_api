@@ -802,3 +802,60 @@ BEGIN
     RETURN jsonb_build_object('success', true, 'bookingId', v_booking_id, 'mentorName', COALESCE(v_mentor_name, 'the faculty advisor'));
 END;
 $$;
+
+CREATE OR REPLACE FUNCTION engagement.fn_achievement_create(
+    p_tenant_id UUID,
+    p_student_id UUID,
+    p_title VARCHAR(200),
+    p_category VARCHAR(100),
+    p_level VARCHAR(50),
+    p_visibility VARCHAR(20),
+    p_award_date DATE,
+    p_issuer VARCHAR(150),
+    p_grade VARCHAR(50),
+    p_remarks TEXT,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = engagement, academics, audit, public
+AS $$
+DECLARE
+    v_achievement_id UUID;
+    v_student_exists BOOLEAN;
+BEGIN
+    SELECT EXISTS(
+        SELECT 1 FROM academics.students
+        WHERE student_id = p_student_id AND tenant_id = p_tenant_id
+    ) INTO v_student_exists;
+
+    IF NOT v_student_exists THEN
+        RAISE EXCEPTION 'Student not found in this academy' USING ERRCODE = 'P0002';
+    END IF;
+
+    INSERT INTO engagement.achievements (
+        tenant_id, student_id, title, category, level, visibility, award_date, issuer, grade, remarks
+    ) VALUES (
+        p_tenant_id, p_student_id, p_title, p_category,
+        COALESCE(p_level, 'Institute'),
+        COALESCE(p_visibility, 'public'),
+        COALESCE(p_award_date, CURRENT_DATE),
+        COALESCE(p_issuer, 'Academy Faculty'),
+        p_grade, p_remarks
+    ) RETURNING achievement_id INTO v_achievement_id;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (
+        p_tenant_id, p_actor_id, 'achievement.created', 'achievement', v_achievement_id::text,
+        gen_random_uuid()::text,
+        jsonb_build_object('title', p_title, 'student_id', p_student_id, 'category', p_category)
+    );
+
+    RETURN jsonb_build_object(
+        'achievement_id', v_achievement_id,
+        'title', p_title,
+        'student_id', p_student_id
+    );
+END;
+$$;
+
