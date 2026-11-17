@@ -181,13 +181,14 @@ AS $$
     SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.name), '[]'::jsonb)
     FROM (
         SELECT b.batch_id, b.name, b.room, b.capacity, b.status, b.start_date, b.end_date,
-               c.course_id, c.title AS course_title, br.name AS branch_name, u.full_name AS instructor_name,
+               c.course_id, c.title AS course_title, br.name AS branch_name, b.instructor_user_id, u.full_name AS instructor_name,
                (SELECT COUNT(*) FROM academics.enrollments e WHERE e.batch_id = b.batch_id AND e.status = 'enrolled') AS enrolled_count,
                COALESCE((
                    SELECT jsonb_agg(jsonb_build_object(
                        'weekday', s.weekday,
                        'day', to_char(DATE '2024-01-01' + (s.weekday - 1), 'Dy'),
                        'start_key', to_char(s.start_time, 'HH24:MI'),
+                       'end_key', to_char(s.end_time, 'HH24:MI'),
                        'start_time', to_char(s.start_time, 'HH12:MI AM'),
                        'end_time', to_char(s.end_time, 'HH12:MI AM'),
                        'session_type', s.session_type

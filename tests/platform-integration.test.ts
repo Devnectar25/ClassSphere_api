@@ -333,6 +333,39 @@ test('Academies, branch-wise management & role-based users', async (t) => {
     });
 });
 
+test('Self-service academy sign-up', async (t) => {
+    const email = `owner.${suffix}@signup.example.com`;
+    const register = (ownerEmail: string) => callFn<TenantResult & { adminUserId: string; slug: string }>('tenant.fn_tenant_register',
+        'Ravi Math Academy', 'Tuition', 'Starter', 'Ravi Kumar', ownerEmail, '+91 98400 00000', hashPassword('Owner#Pass1'));
+    const academy = await register(email);
+    createdTenants.push(academy.tenantId);
+
+    await t.test('creates the academy, main branch, subscription and an owner who can sign in as admin', async () => {
+        const user = await callFn<{ passwordHash: string; memberships: Array<{ tenantId: string; role: string; academyType: string }> }>(
+            'identity_app.fn_user_auth_lookup', email, null);
+        assert.equal(verifyPassword('Owner#Pass1', user.passwordHash), true);
+        assert.deepEqual(user.memberships.map(m => [m.tenantId, m.role, m.academyType]), [[academy.tenantId, 'TenantAdmin', 'Tuition']]);
+        assert.equal(academy.planTier, 'Starter');
+        assert.ok(academy.branchId);
+
+        const [stored] = await query<{ phone: string; contact: { email: string; phone: string } }>(
+            `SELECT u.phone, o.settings->'contact' AS contact FROM identity_app.users u, tenant.organizations o
+             WHERE u.user_id = $1 AND o.tenant_id = $2`, [academy.adminUserId, academy.tenantId]);
+        assert.equal(stored.phone, '+91 98400 00000');
+        assert.equal(stored.contact.email, email);
+    });
+
+    await t.test('a second academy with the same name gets its own workspace slug', async () => {
+        const second = await register(`second.${suffix}@signup.example.com`);
+        createdTenants.push(second.tenantId);
+        assert.notEqual(second.slug, academy.slug);
+    });
+
+    await t.test('an email that already has a sign-in is refused', async () => {
+        await assert.rejects(register(email.toUpperCase()), (err: { code?: string }) => err.code === '23505');
+    });
+});
+
 test('Courses, subjects, tests, grading & parent portal results', async (t) => {
     const academy = await createTenant('Theta Tuition Centre', 'Professional');
 
