@@ -227,7 +227,18 @@ AS $$
                 'student_name', student_name, 'batches', batches, 'billing_period', billing_period,
                 'designation', designation, 'total_amount', total_amount, 'paid_amount', paid_amount,
                 'balance_amount', balance_amount, 'due_date', due_date, 'status', effective_status,
-                'paid_on', paid_on, 'created_at', created_at
+                'paid_on', paid_on, 'created_at', created_at,
+                'payments', COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object(
+                        'payment_id', p.payment_id,
+                        'amount', p.amount,
+                        'payment_method', p.payment_method,
+                        'receipt_number', p.receipt_number,
+                        'created_at', p.created_at
+                    ) ORDER BY p.created_at ASC)
+                    FROM billing.payments p
+                    WHERE p.invoice_id = inv.invoice_id
+                ), '[]'::jsonb)
             ) ORDER BY created_at DESC, invoice_number DESC) FROM inv
         ), '[]'::jsonb),
         'summary', (
@@ -315,4 +326,58 @@ AS $$
             FROM billing.fee_plans fp WHERE fp.tenant_id = p_tenant_id
         ), '[]'::jsonb)
     );
+$$;
+
+
+CREATE OR REPLACE FUNCTION billing.fn_fee_plan_update(
+    p_tenant_id UUID,
+    p_plan_id UUID,
+    p_name VARCHAR(150),
+    p_discount_percent NUMERIC,
+    p_is_active BOOLEAN,
+    p_items JSONB,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = billing, audit, public
+AS $$
+DECLARE
+    v_item JSONB;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM billing.fee_plans WHERE plan_id = p_plan_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Fee plan not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF p_name IS NULL OR trim(p_name) = '' THEN
+        RAISE EXCEPTION 'Plan name is required' USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE billing.fee_plans
+    SET name = trim(p_name),
+        discount_percent = COALESCE(p_discount_percent, 0.00),
+        is_active = COALESCE(p_is_active, true)
+    WHERE plan_id = p_plan_id AND tenant_id = p_tenant_id;
+
+    IF p_items IS NOT NULL AND jsonb_typeof(p_items) = 'array' THEN
+        DELETE FROM billing.fee_plan_items WHERE plan_id = p_plan_id;
+        FOR v_item IN SELECT * FROM jsonb_array_elements(p_items) LOOP
+            IF (v_item->>'amount')::NUMERIC > 0 THEN
+                INSERT INTO billing.fee_plan_items (
+                    plan_id, fee_head_id, amount
+                ) VALUES (
+                    p_plan_id,
+                    (v_item->>'feeHeadId')::UUID,
+                    (v_item->>'amount')::NUMERIC
+                ) ON CONFLICT (plan_id, fee_head_id) DO UPDATE SET amount = EXCLUDED.amount;
+            END IF;
+        END LOOP;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'fee_plan.updated', 'fee_plan', p_plan_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'planId', p_plan_id));
+
+    RETURN jsonb_build_object('success', true, 'planId', p_plan_id);
+END;
 $$;

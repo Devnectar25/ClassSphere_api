@@ -93,6 +93,67 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION academics.fn_course_update(
+    p_tenant_id UUID,
+    p_course_id UUID,
+    p_title VARCHAR(200),
+    p_code VARCHAR(50),
+    p_category VARCHAR(100),
+    p_level VARCHAR(100),
+    p_duration_months INT,
+    p_tuition_amount NUMERIC(10,2),
+    p_billing_period VARCHAR(30),
+    p_description TEXT,
+    p_is_active BOOLEAN,
+    p_subjects TEXT[],
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = academics, audit, public
+AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM academics.courses WHERE course_id = p_course_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Course not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF p_tuition_amount IS NULL OR p_tuition_amount < 0 THEN
+        RAISE EXCEPTION 'Tuition amount must be zero or more' USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE academics.courses
+    SET title = COALESCE(p_title, title),
+        code = COALESCE(upper(p_code), code),
+        category = COALESCE(p_category, category),
+        level = p_level,
+        duration_months = p_duration_months,
+        tuition_amount = COALESCE(p_tuition_amount, tuition_amount),
+        billing_period = COALESCE(p_billing_period, billing_period),
+        description = COALESCE(p_description, description),
+        is_active = COALESCE(p_is_active, is_active)
+    WHERE course_id = p_course_id AND tenant_id = p_tenant_id;
+
+    IF p_subjects IS NOT NULL THEN
+        DELETE FROM academics.course_subjects
+        WHERE course_id = p_course_id
+          AND tenant_id = p_tenant_id
+          AND name NOT IN (SELECT unnest(p_subjects));
+
+        INSERT INTO academics.course_subjects (tenant_id, course_id, name, sort_order)
+        SELECT p_tenant_id, p_course_id, trim(name), ord
+        FROM unnest(p_subjects) WITH ORDINALITY AS t(name, ord)
+        WHERE trim(name) <> ''
+        ON CONFLICT (course_id, name) DO NOTHING;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'course.updated', 'course', p_course_id::text, gen_random_uuid()::text,
+            jsonb_build_object('title', p_title, 'code', p_code, 'isActive', p_is_active));
+
+    RETURN jsonb_build_object('success', true, 'courseId', p_course_id);
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION academics.fn_test_schedule(
     p_tenant_id UUID,
     p_batch_id UUID,

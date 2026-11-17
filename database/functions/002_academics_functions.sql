@@ -459,3 +459,186 @@ BEGIN
     RETURN jsonb_build_object('success', true, 'guardianId', v_guardian_id);
 END;
 $$;
+
+
+CREATE OR REPLACE FUNCTION academics.fn_student_update(
+    p_tenant_id UUID,
+    p_student_id UUID,
+    p_first_name VARCHAR(100),
+    p_last_name VARCHAR(100),
+    p_email VARCHAR(255),
+    p_phone VARCHAR(50),
+    p_status VARCHAR(30),
+    p_batch_id UUID,
+    p_branch_id UUID,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = academics, tenant, audit, public
+AS $$
+BEGIN
+    UPDATE academics.students
+    SET first_name = COALESCE(p_first_name, first_name),
+        last_name = COALESCE(p_last_name, last_name),
+        email = COALESCE(p_email, email),
+        phone = COALESCE(p_phone, phone),
+        status = COALESCE(p_status, status),
+        branch_id = COALESCE(p_branch_id, branch_id),
+        updated_at = clock_timestamp()
+    WHERE student_id = p_student_id AND tenant_id = p_tenant_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Student not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF p_batch_id IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM academics.enrollments WHERE student_id = p_student_id AND tenant_id = p_tenant_id) THEN
+            UPDATE academics.enrollments
+            SET batch_id = p_batch_id, status = 'enrolled'
+            WHERE student_id = p_student_id AND tenant_id = p_tenant_id;
+        ELSE
+            INSERT INTO academics.enrollments (tenant_id, student_id, batch_id, status)
+            VALUES (p_tenant_id, p_student_id, p_batch_id, 'enrolled');
+        END IF;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'student.updated', 'student', p_student_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_first_name || ' ' || p_last_name, 'status', p_status));
+
+    RETURN jsonb_build_object('success', true, 'studentId', p_student_id);
+END;
+$$;
+
+
+CREATE OR REPLACE FUNCTION academics.fn_batch_create(
+    p_tenant_id UUID,
+    p_course_id UUID,
+    p_branch_id UUID,
+    p_name VARCHAR(150),
+    p_instructor_user_id UUID,
+    p_room VARCHAR(100),
+    p_capacity INT,
+    p_status VARCHAR(30),
+    p_start_date DATE,
+    p_end_date DATE,
+    p_schedules JSONB,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = academics, audit, public
+AS $$
+DECLARE
+    v_batch_id UUID;
+    v_item JSONB;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM academics.courses WHERE course_id = p_course_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Course not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM tenant.branches WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Branch not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF p_name IS NULL OR trim(p_name) = '' THEN
+        RAISE EXCEPTION 'Batch name is required' USING ERRCODE = '22023';
+    END IF;
+
+    INSERT INTO academics.batches (
+        tenant_id, course_id, branch_id, name, instructor_user_id, room, capacity, status, start_date, end_date
+    ) VALUES (
+        p_tenant_id, p_course_id, p_branch_id, trim(p_name), p_instructor_user_id, p_room,
+        COALESCE(p_capacity, 30), COALESCE(p_status, 'active'), COALESCE(p_start_date, CURRENT_DATE), p_end_date
+    ) RETURNING batch_id INTO v_batch_id;
+
+    IF p_schedules IS NOT NULL AND jsonb_typeof(p_schedules) = 'array' THEN
+        FOR v_item IN SELECT * FROM jsonb_array_elements(p_schedules) LOOP
+            INSERT INTO academics.batch_schedules (
+                tenant_id, batch_id, weekday, start_time, end_time, session_type
+            ) VALUES (
+                p_tenant_id,
+                v_batch_id,
+                (v_item->>'weekday')::SMALLINT,
+                (v_item->>'startTime')::TIME,
+                (v_item->>'endTime')::TIME,
+                COALESCE(v_item->>'sessionType', 'Class')
+            ) ON CONFLICT (batch_id, weekday, start_time) DO NOTHING;
+        END LOOP;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'batch.created', 'batch', v_batch_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'courseId', p_course_id, 'branchId', p_branch_id));
+
+    RETURN jsonb_build_object('success', true, 'batchId', v_batch_id);
+END;
+$$;
+
+
+CREATE OR REPLACE FUNCTION academics.fn_batch_update(
+    p_tenant_id UUID,
+    p_batch_id UUID,
+    p_course_id UUID,
+    p_branch_id UUID,
+    p_name VARCHAR(150),
+    p_instructor_user_id UUID,
+    p_room VARCHAR(100),
+    p_capacity INT,
+    p_status VARCHAR(30),
+    p_start_date DATE,
+    p_end_date DATE,
+    p_schedules JSONB,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = academics, audit, public
+AS $$
+DECLARE
+    v_item JSONB;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM academics.batches WHERE batch_id = p_batch_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Batch not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF p_name IS NULL OR trim(p_name) = '' THEN
+        RAISE EXCEPTION 'Batch name is required' USING ERRCODE = '22023';
+    END IF;
+
+    UPDATE academics.batches
+    SET name = trim(p_name),
+        course_id = COALESCE(p_course_id, course_id),
+        branch_id = COALESCE(p_branch_id, branch_id),
+        instructor_user_id = p_instructor_user_id,
+        room = p_room,
+        capacity = COALESCE(p_capacity, capacity),
+        status = COALESCE(p_status, status),
+        start_date = COALESCE(p_start_date, start_date),
+        end_date = p_end_date
+    WHERE batch_id = p_batch_id AND tenant_id = p_tenant_id;
+
+    IF p_schedules IS NOT NULL AND jsonb_typeof(p_schedules) = 'array' THEN
+        DELETE FROM academics.batch_schedules WHERE batch_id = p_batch_id AND tenant_id = p_tenant_id;
+        FOR v_item IN SELECT * FROM jsonb_array_elements(p_schedules) LOOP
+            INSERT INTO academics.batch_schedules (
+                tenant_id, batch_id, weekday, start_time, end_time, session_type
+            ) VALUES (
+                p_tenant_id,
+                p_batch_id,
+                (v_item->>'weekday')::SMALLINT,
+                (v_item->>'startTime')::TIME,
+                (v_item->>'endTime')::TIME,
+                COALESCE(v_item->>'sessionType', 'Class')
+            ) ON CONFLICT (batch_id, weekday, start_time) DO NOTHING;
+        END LOOP;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'batch.updated', 'batch', p_batch_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'batchId', p_batch_id));
+
+    RETURN jsonb_build_object('success', true, 'batchId', p_batch_id);
+END;
+$$;
