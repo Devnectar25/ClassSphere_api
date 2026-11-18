@@ -54,3 +54,24 @@ export async function POST(req: NextRequest) {
         return fail(err, context, req);
     }
 }
+
+export async function PUT(req: NextRequest) {
+    const context = authorize(req, 'students.write');
+    if (context instanceof Response) return context;
+
+    try {
+        const { studentId, firstName, lastName, email, phone, status, branchId, batchId } = await req.json();
+
+        if (!studentId) {
+            return problem(context, req, 400, 'Validation Error', 'studentId is required for updating.');
+        }
+
+        const result = await callFn('academics.fn_student_update',
+            context.tenantId, studentId, firstName || null, lastName || null, email || null,
+            phone || null, status || null, batchId || null, context.branchId ?? branchId ?? null, context.actorId);
+
+        return ok(context, result);
+    } catch (err) {
+        return fail(err, context, req);
+    }
+}
