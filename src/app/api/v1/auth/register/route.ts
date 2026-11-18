@@ -4,11 +4,37 @@ import { ACADEMY_TYPES, hashPassword } from '@/lib/auth';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { findUser, issueSession } from '@/lib/api/session';
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+const NAME = /^[a-zA-Z]+(?:[ '.-][a-zA-Z]*)*$/;
+const ACADEMY_NAME = /^[a-zA-Z][a-zA-Z &'.,()\-/]*$/;
+
+/** Indian numbers (optionally +91 / 91 / 0 prefixed): 10 digits starting 6–9. Other +country numbers: 7–15 digits. */
+function isValidMobile(phone: string) {
+    if (!/^\+?[\d\s\-()]+$/.test(phone)) return false;
+    const digits = phone.replace(/\D/g, '');
+    const international = phone.startsWith('+');
+    if (!international || digits.startsWith('91')) {
+        let national = digits;
+        if (international || (digits.length === 12 && digits.startsWith('91'))) national = digits.slice(2);
+        else if (digits.length === 11 && digits.startsWith('0')) national = digits.slice(1);
+        return /^[6-9]\d{9}$/.test(national) && !/^(\d)\1{9}$/.test(national);
+    }
+    return digits.length >= 7 && digits.length <= 15;
+}
+
+function passwordProblem(password: string): string | null {
+    if (password.length < 8 || password.length > 64) return 'Password must be 8 to 64 characters.';
+    if (/\s/.test(password)) return 'Password cannot contain spaces.';
+    if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password) || !/[^a-zA-Z0-9\s]/.test(password)) {
+        return 'Password must include an uppercase letter, a lowercase letter, a number and a special character.';
+    }
+    return null;
+}
 
 /**
  * Self-service sign-up: a new academy owner creates their workspace and is signed in as its admin.
- * Public (no session). An email that already has a sign-in is refused with 409.
+ * Public (no session). Email is optional (mobile-only owners sign in with their mobile number).
+ * An email or mobile number that already has a sign-in is refused with 409.
  */
 export async function POST(req: NextRequest) {
     const correlationId = crypto.randomUUID();
@@ -17,60 +43,35 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const academyName = String(body.academyName ?? '').trim();
-        const firstName = String(body.firstName ?? '').trim();
-        const lastName = String(body.lastName ?? '').trim();
+        const tidy = (v: unknown) => String(v ?? '').trim().replace(/\s+/g, ' ');
+        const academyName = tidy(body.academyName);
+        const firstName = tidy(body.firstName);
+        const lastName = tidy(body.lastName);
         const email = String(body.email ?? '').trim().toLowerCase();
-        const rawPhone = String(body.phone ?? '').trim();
-        const countryCode = String(body.countryCode ?? '+91').trim();
-        const { academyType, planTier, password, acceptTerms } = body;
+        const phone = String(body.phone ?? '').trim();
+        const { academyType, planTier, acceptTerms } = body;
+        const password = typeof body.password === 'string' ? body.password : '';
 
-        if (!academyName || !firstName || !lastName || !email || !rawPhone || !password) {
+        if (!academyName || !firstName || !lastName || !phone || !password) {
             return fail(400, 'Validation Error', 'Please fill in all required fields.');
         }
-        if (academyName.length < 2) {
-            return fail(400, 'Validation Error', 'Academy name must be at least 2 characters.');
+        if (academyName.length < 3 || academyName.length > 100 || !ACADEMY_NAME.test(academyName)) {
+            return fail(400, 'Validation Error', "Academy name must be 3 to 100 characters, starting with a letter, using letters, spaces and & ' . , ( ) - / only (no numbers).");
         }
-        if (!/^[a-zA-Z\s'-]+$/.test(firstName)) {
-            return fail(400, 'Validation Error', 'First name can only contain letters.');
+        if (firstName.length < 2 || firstName.length > 50 || !NAME.test(firstName)) {
+            return fail(400, 'Validation Error', 'First name must be 2 to 50 letters (spaces, apostrophes, hyphens and dots allowed).');
         }
-        if (!/^[a-zA-Z\s'-]+$/.test(lastName)) {
-            return fail(400, 'Validation Error', 'Last name can only contain letters.');
+        if (lastName.length > 50 || !NAME.test(lastName)) {
+            return fail(400, 'Validation Error', 'Last name must be up to 50 letters (spaces, apostrophes, hyphens and dots allowed).');
         }
-        if (!EMAIL.test(email)) {
+        if (email && (email.length > 254 || email.split('@')[0].length > 64 || /\.\./.test(email) || !EMAIL.test(email))) {
             return fail(400, 'Validation Error', 'Enter a valid email address.');
         }
-
-        // Extract local digits by removing country code prefix if present
-        let localDigits = rawPhone;
-        if (countryCode && localDigits.startsWith(countryCode)) {
-            localDigits = localDigits.slice(countryCode.length).trim();
-        } else if (localDigits.startsWith('+')) {
-            const parts = localDigits.split(/\s+/);
-            if (parts.length > 1) {
-                localDigits = parts.slice(1).join('');
-            }
+        if (!isValidMobile(phone)) {
+            return fail(400, 'Validation Error', 'Enter a valid mobile number (10 digits starting 6–9, or with a country code).');
         }
-        const phoneDigits = localDigits.replace(/\D/g, '');
-
-        const isIndia = countryCode === '+91' || rawPhone.startsWith('+91') || (!countryCode && phoneDigits.length === 10);
-        if (isIndia) {
-            if (phoneDigits.length !== 10 || !/^[6-9]\d{9}$/.test(phoneDigits)) {
-                return fail(400, 'Validation Error', 'Enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
-            }
-        } else {
-            if (phoneDigits.length < 7 || phoneDigits.length > 15) {
-                return fail(400, 'Validation Error', 'Enter a valid mobile number for the selected country.');
-            }
-        }
-
-        const formattedPhone = `${countryCode} ${phoneDigits}`.trim();
-        if (String(password).length < 8) {
-            return fail(400, 'Validation Error', 'Password must be at least 8 characters.');
-        }
-        if (!/[a-zA-Z]/.test(String(password)) || !/[0-9]/.test(String(password))) {
-            return fail(400, 'Validation Error', 'Password must include at least one letter and one number.');
-        }
+        const pwProblem = passwordProblem(password);
+        if (pwProblem) return fail(400, 'Validation Error', pwProblem);
         if (!ACADEMY_TYPES.includes(academyType)) {
             return fail(400, 'Validation Error', `Class category must be one of: ${ACADEMY_TYPES.join(', ')}.`);
         }
@@ -78,11 +79,11 @@ export async function POST(req: NextRequest) {
             return fail(400, 'Validation Error', 'Please accept the Terms of Service and Privacy Policy.');
         }
 
-        const result = await callFn<{ tenantId: string }>('tenant.fn_tenant_register',
-            academyName, academyType, planTier || null, `${firstName} ${lastName}`, email, formattedPhone, hashPassword(String(password)));
+        const result = await callFn<{ tenantId: string; adminUserId: string }>('tenant.fn_tenant_register',
+            academyName, academyType, planTier || null, `${firstName} ${lastName}`, email || null, phone, hashPassword(String(password)));
 
         // Sign the new owner straight into their academy
-        const user = await findUser(email, null);
+        const user = await findUser(null, result.adminUserId);
         const session = user && await issueSession(user, result.tenantId);
         if (!session) return fail(500, 'Internal Server Error', 'Your academy was created. Please sign in to continue.');
 

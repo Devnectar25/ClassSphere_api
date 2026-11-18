@@ -69,3 +69,10 @@ database/local-dump.sql
 *.sqlite
 *.sqlite3
 *.db
+
+# additional temporary, backup, dump, and scratch files
+*.temp
+*.sql.bak
+tmp/
+temp/
+scratch/

@@ -4,7 +4,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { findUser, issueSession } from '@/lib/api/session';
 
 /**
- * Sign-in: email + password → session token for the user's academy (or platform scope).
+ * Sign-in: email or mobile number + password → session token for the user's academy (or platform scope).
  * Traceability: TDD Section 12; PLT-004
  */
 export async function POST(req: NextRequest) {
@@ -14,13 +14,23 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const email = String(body.email ?? '').trim();
+        // Identifier: an email address or a mobile number (`email` is accepted for older clients)
+        const identifier = String(body.identifier ?? body.email ?? '').trim();
         const { password, tenantId } = body;
-        if (!email || !password) return fail(400, 'Validation Error', 'Email and password are required.');
+        if (!identifier || !password) return fail(400, 'Validation Error', 'Email or mobile number and password are required.');
+        if (!identifier.includes('@') && !/^\d{10}$/.test(identifier)) {
+            return fail(400, 'Validation Error', 'Enter a valid 10-digit mobile number or email address.');
+        }
 
-        const user = await findUser(email, null);
-        if (!user || !user.isActive || !verifyPassword(password, user.passwordHash)) {
-            return fail(401, 'Invalid Credentials', 'The email or password is incorrect.');
+        const user = await findUser(identifier, null);
+        if (!user) {
+            return fail(404, 'Account Not Found', 'No account found with this email or mobile number. Please sign up first.');
+        }
+        if (!user.isActive) {
+            return fail(403, 'Account Inactive', 'This account is inactive. Please contact your administrator.');
+        }
+        if (!verifyPassword(password, user.passwordHash)) {
+            return fail(401, 'Invalid Credentials', 'Incorrect password. Please try again.');
         }
 
         // Default academy: requested one, else the first staff membership, else the platform scope

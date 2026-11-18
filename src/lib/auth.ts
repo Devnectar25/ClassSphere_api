@@ -95,3 +95,47 @@ export function verifyToken(token: string): SessionClaims | null {
     const claims = JSON.parse(Buffer.from(payload, 'base64url').toString()) as SessionClaims;
     return claims.exp > Date.now() / 1000 ? claims : null;
 }
+
+export interface ResetChallengeClaims {
+    purpose: 'password_reset';
+    sub: string;
+    otpHash: string;
+    exp: number;
+}
+
+export function hashOtp(userId: string, otp: string) {
+    return createHmac('sha256', secret()).update(`otp:${userId}:${otp}`).digest('base64url');
+}
+
+export function signResetChallenge(userId: string, otp: string, ttlSeconds = 300) {
+    const claims: ResetChallengeClaims = {
+        purpose: 'password_reset',
+        sub: userId,
+        otpHash: hashOtp(userId, otp),
+        exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+    };
+    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    return `${payload}.${sign(payload)}`;
+}
+
+export function verifyResetChallenge(token: string, otp: string): { valid: true; userId: string } | { valid: false; reason: 'invalid' | 'expired' | 'wrong_otp' } {
+    const [payload, signature] = token.split('.');
+    if (!payload || !signature) return { valid: false, reason: 'invalid' };
+    const expected = Buffer.from(sign(payload));
+    const actual = Buffer.from(signature);
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return { valid: false, reason: 'invalid' };
+    let claims: ResetChallengeClaims;
+    try {
+        claims = JSON.parse(Buffer.from(payload, 'base64url').toString()) as ResetChallengeClaims;
+    } catch {
+        return { valid: false, reason: 'invalid' };
+    }
+    if (claims.purpose !== 'password_reset' || !claims.sub || !claims.otpHash) return { valid: false, reason: 'invalid' };
+    if (claims.exp <= Date.now() / 1000) return { valid: false, reason: 'expired' };
+    const expectedOtp = Buffer.from(claims.otpHash);
+    const actualOtp = Buffer.from(hashOtp(claims.sub, otp));
+    if (expectedOtp.length !== actualOtp.length || !timingSafeEqual(expectedOtp, actualOtp)) {
+        return { valid: false, reason: 'wrong_otp' };
+    }
+    return { valid: true, userId: claims.sub };
+}
