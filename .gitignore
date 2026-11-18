@@ -53,6 +53,13 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local embedded database (PGlite) and its SQL export
+# local embedded database (PGlite), test databases and SQL dumps
 database/local-db/
+database/test-clean-db/
+database/*-db/
 database/local-dump.sql
+*.dump
+*.sql.dump
+*.sqlite
+*.sqlite3
+*.db
