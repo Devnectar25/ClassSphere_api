@@ -7,7 +7,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Batches and Academic Scheduling API — branch-scoped
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context =  authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('academics.fn_batch_list', context.tenantId, context.branchId));
@@ -16,34 +16,34 @@ export async function GET(req: NextRequest) {
     }
 }
 
-/** Creates a new batch with optional timetable schedule. */
+/** Creates a new batch with its weekly schedule. */
 export async function POST(req: NextRequest) {
     const context = authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
-        const body = await req.json();
-        const { courseId, branchId, name, instructorUserId, room, capacity, status, startDate, endDate, schedules } = body;
-        if (!courseId || !name?.trim()) {
-            return problem(context, req, 400, 'Validation Error', 'Course and Batch name are required.');
+        const { name, courseId, branchId, instructorUserId, room, capacity, status, startDate, endDate, schedules } = await req.json();
+        if (!name?.trim() || !courseId) {
+            return problem(context, req, 400, 'Validation Error', 'Batch name and course are required.');
         }
-
-        const effectiveBranchId = branchId || context.branchId;
-        if (!effectiveBranchId) {
-            return problem(context, req, 400, 'Validation Error', 'Branch is required.');
+        if (schedules !== undefined && !Array.isArray(schedules)) {
+            return problem(context, req, 400, 'Validation Error', 'schedules must be an array.');
         }
-
+        if (context.branchId && branchId && context.branchId !== branchId) {
+            return problem(context, req, 403, 'Forbidden', 'Cannot create a batch for another branch.');
+        }
+        const effectiveBranchId = context.branchId || branchId || null;
         const result = await callFn('academics.fn_batch_create',
             context.tenantId,
+            name.trim(),
             courseId,
             effectiveBranchId,
-            name.trim(),
             instructorUserId || null,
             room || null,
-            capacity ? Number(capacity) : 30,
+            Number(capacity || 25),
             status || 'active',
-            startDate || null,
+            startDate || new Date().toISOString().split('T')[0],
             endDate || null,
-            Array.isArray(schedules) && schedules.length > 0 ? JSON.stringify(schedules) : null,
+            JSON.stringify(Array.isArray(schedules) ? schedules : []),
             context.actorId
         );
         return ok(context, result, 201);
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     }
 }
 
-/** Updates an existing batch with optional timetable schedule. */
+/** Updates a batch's details and replaces its weekly schedule. */
 export async function PUT(req: NextRequest) {
     const context = authorize(req, 'courses.write');
     if (context instanceof Response) return context;
