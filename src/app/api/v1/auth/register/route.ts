@@ -21,10 +21,11 @@ export async function POST(req: NextRequest) {
         const firstName = String(body.firstName ?? '').trim();
         const lastName = String(body.lastName ?? '').trim();
         const email = String(body.email ?? '').trim().toLowerCase();
-        const phone = String(body.phone ?? '').trim();
+        const rawPhone = String(body.phone ?? '').trim();
+        const countryCode = String(body.countryCode ?? '+91').trim();
         const { academyType, planTier, password, acceptTerms } = body;
 
-        if (!academyName || !firstName || !lastName || !email || !phone || !password) {
+        if (!academyName || !firstName || !lastName || !email || !rawPhone || !password) {
             return fail(400, 'Validation Error', 'Please fill in all required fields.');
         }
         if (academyName.length < 2) {
@@ -39,10 +40,31 @@ export async function POST(req: NextRequest) {
         if (!EMAIL.test(email)) {
             return fail(400, 'Validation Error', 'Enter a valid email address.');
         }
-        const phoneDigits = phone.replace(/\D/g, '');
-        if (/[a-zA-Z]/.test(phone) || phoneDigits.length < 10 || phoneDigits.length > 15) {
-            return fail(400, 'Validation Error', 'Enter a valid 10-to-15 digit mobile number.');
+
+        // Extract local digits by removing country code prefix if present
+        let localDigits = rawPhone;
+        if (countryCode && localDigits.startsWith(countryCode)) {
+            localDigits = localDigits.slice(countryCode.length).trim();
+        } else if (localDigits.startsWith('+')) {
+            const parts = localDigits.split(/\s+/);
+            if (parts.length > 1) {
+                localDigits = parts.slice(1).join('');
+            }
         }
+        const phoneDigits = localDigits.replace(/\D/g, '');
+
+        const isIndia = countryCode === '+91' || rawPhone.startsWith('+91') || (!countryCode && phoneDigits.length === 10);
+        if (isIndia) {
+            if (phoneDigits.length !== 10 || !/^[6-9]\d{9}$/.test(phoneDigits)) {
+                return fail(400, 'Validation Error', 'Enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
+            }
+        } else {
+            if (phoneDigits.length < 7 || phoneDigits.length > 15) {
+                return fail(400, 'Validation Error', 'Enter a valid mobile number for the selected country.');
+            }
+        }
+
+        const formattedPhone = `${countryCode} ${phoneDigits}`.trim();
         if (String(password).length < 8) {
             return fail(400, 'Validation Error', 'Password must be at least 8 characters.');
         }
@@ -57,7 +79,7 @@ export async function POST(req: NextRequest) {
         }
 
         const result = await callFn<{ tenantId: string }>('tenant.fn_tenant_register',
-            academyName, academyType, planTier || null, `${firstName} ${lastName}`, email, phone, hashPassword(String(password)));
+            academyName, academyType, planTier || null, `${firstName} ${lastName}`, email, formattedPhone, hashPassword(String(password)));
 
         // Sign the new owner straight into their academy
         const user = await findUser(email, null);

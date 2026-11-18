@@ -35,6 +35,12 @@ logs/
 .cache/
 *.tmp
 *.bak
+~$*
+*.swp
+*.swo
+*~
+*.orig
+.turbo/
 
 # debug
 npm-debug.log*

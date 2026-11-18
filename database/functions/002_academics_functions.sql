@@ -105,6 +105,7 @@ BEGIN
     FROM (
         SELECT s.student_id, s.first_name, s.last_name, s.email, s.phone, s.date_of_birth,
                s.enrollment_number, s.status, s.academic_standing, s.matriculation_year, s.created_at, s.branch_id,
+               s.profile->>'photo' AS photo,
                (SELECT name FROM tenant.branches br WHERE br.branch_id = s.branch_id) AS branch_name,
                (SELECT string_agg(b.name, ', ' ORDER BY b.name)
                 FROM academics.enrollments e JOIN academics.batches b ON b.batch_id = e.batch_id
@@ -181,7 +182,7 @@ AS $$
     SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.name), '[]'::jsonb)
     FROM (
         SELECT b.batch_id, b.name, b.room, b.capacity, b.status, b.start_date, b.end_date,
-               c.course_id, c.title AS course_title, br.name AS branch_name, b.instructor_user_id, u.full_name AS instructor_name,
+               c.course_id, c.title AS course_title, c.tuition_amount AS tuition_amount, br.name AS branch_name, b.instructor_user_id, u.full_name AS instructor_name,
                (SELECT COUNT(*) FROM academics.enrollments e WHERE e.batch_id = b.batch_id AND e.status = 'enrolled') AS enrolled_count,
                COALESCE((
                    SELECT jsonb_agg(jsonb_build_object(
@@ -402,7 +403,8 @@ BEGIN
         VALUES (lower(v_guardian.email), p_password_hash, v_guardian.first_name || ' ' || v_guardian.last_name, v_guardian.phone)
         RETURNING user_id INTO v_user_id;
     ELSE
-        UPDATE identity_app.users SET password_hash = p_password_hash, is_active = TRUE WHERE user_id = v_user_id;
+        -- If user already exists, do not overwrite their existing password
+        UPDATE identity_app.users SET password_hash = COALESCE(password_hash, p_password_hash), is_active = TRUE WHERE user_id = v_user_id;
     END IF;
 
     UPDATE academics.guardians SET user_id = v_user_id WHERE guardian_id = p_guardian_id;
