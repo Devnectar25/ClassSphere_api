@@ -392,8 +392,16 @@ AS $$
         ), '[]'::jsonb)
     )
     FROM identity_app.users u
-    WHERE (p_email IS NOT NULL AND lower(u.email) = lower(p_email))
-       OR (p_email IS NULL AND u.user_id = p_user_id);
+    -- p_email is the sign-in identifier: an email, or (without '@') a mobile number matched on its last 10 digits.
+    -- An email match always wins over a mobile match.
+    WHERE (p_email IS NOT NULL AND position('@' IN p_email) > 0 AND lower(u.email) = lower(p_email))
+       OR (p_email IS NOT NULL AND position('@' IN p_email) = 0
+           AND length(regexp_replace(p_email, '\D', '', 'g')) >= 10
+           AND u.phone IS NOT NULL
+           AND right(regexp_replace(u.phone, '\D', '', 'g'), 10) = right(regexp_replace(p_email, '\D', '', 'g'), 10))
+       OR (p_email IS NULL AND u.user_id = p_user_id)
+    ORDER BY u.created_at
+    LIMIT 1;
 $$;
 
 CREATE OR REPLACE FUNCTION identity_app.fn_user_login_record(
@@ -409,5 +417,27 @@ BEGIN
     INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
     VALUES (p_tenant_id, p_user_id, 'auth.login', 'user', p_user_id::text, gen_random_uuid()::text, '{}'::jsonb);
     RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION identity_app.fn_user_password_reset(
+    p_user_id UUID,
+    p_password_hash VARCHAR(255)
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = identity_app, public
+AS $$
+BEGIN
+    UPDATE identity_app.users
+    SET password_hash = p_password_hash,
+        updated_at = clock_timestamp()
+    WHERE user_id = p_user_id AND is_active = TRUE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Account not found or inactive.' USING ERRCODE = '22023';
+    END IF;
+
+    RETURN jsonb_build_object('success', true, 'user_id', p_user_id);
 END;
 $$;

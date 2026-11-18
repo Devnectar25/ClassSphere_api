@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { batchInScope } from '@/lib/api/scope';
 
 /**
  * Batches and Academic Scheduling API — branch-scoped
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
     }
 }
 
-/** Updates a batch's details and replaces its weekly schedule. */
+/** Updates a batch's details and (when an array is sent) replaces its weekly schedule. */
 export async function PUT(req: NextRequest) {
     const context = authorize(req, 'courses.write');
     if (context instanceof Response) return context;
@@ -62,9 +63,17 @@ export async function PUT(req: NextRequest) {
         if (!batchId || !name?.trim()) {
             return problem(context, req, 400, 'Validation Error', 'Batch ID and Batch name are required.');
         }
+        if (schedules !== undefined && schedules !== null && !Array.isArray(schedules)) {
+            return problem(context, req, 400, 'Validation Error', 'schedules must be an array.');
+        }
+        // Branch-scoped users may only edit batches of their own branch (from main)
+        if (!(await batchInScope(context, batchId))) {
+            return problem(context, req, 403, 'Forbidden', 'This batch belongs to another branch.');
+        }
 
         const effectiveBranchId = branchId || context.branchId;
 
+        // 13-argument overload (002_academics_functions.sql) — supports moving a batch between branches
         const result = await callFn('academics.fn_batch_update',
             context.tenantId,
             batchId,

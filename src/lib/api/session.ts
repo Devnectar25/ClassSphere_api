@@ -12,13 +12,14 @@ export interface Membership {
 export interface AuthUser {
     userId: string;
     fullName: string;
-    email: string;
+    email: string | null;
     passwordHash: string;
     isActive: boolean;
     isPlatformAdmin: boolean;
     memberships: Membership[];
 }
 
+/** Looks a user up by sign-in identifier (email or mobile number), or by id when the identifier is null. */
 export function findUser(email: string | null, userId: string | null) {
     return callFn<AuthUser | null>('identity_app.fn_user_auth_lookup', email, userId);
 }
