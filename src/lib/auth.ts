@@ -37,6 +37,9 @@ export function can(role: UserRole, permission: Permission) {
     return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
 }
 
+/** Academy types an academy can be created with (operator provisioning and self-service sign-up). */
+export const ACADEMY_TYPES = ['Tuition', 'Music', 'Sports', 'Dance', 'Arts', 'Test Prep', 'Language', 'Other'];
+
 export function hashPassword(password: string) {
     const salt = randomBytes(16);
     const hash = scryptSync(password, salt, 64);
