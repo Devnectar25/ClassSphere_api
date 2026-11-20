@@ -8,7 +8,7 @@ import { batchInScope } from '@/lib/api/scope';
  * Batches and Academic Scheduling API — branch-scoped
  */
 export async function GET(req: NextRequest) {
-    const context =  authorize(req, 'academics.read');
+    const context = authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('academics.fn_batch_list', context.tenantId, context.branchId));
@@ -73,20 +73,18 @@ export async function PUT(req: NextRequest) {
 
         const effectiveBranchId = branchId || context.branchId;
 
-        // 13-argument overload (002_academics_functions.sql) — supports moving a batch between branches
         const result = await callFn('academics.fn_batch_update',
             context.tenantId,
             batchId,
-            courseId || null,
-            effectiveBranchId || null,
             name.trim(),
+            courseId,
             instructorUserId || null,
             room || null,
             capacity ? Number(capacity) : 30,
             status || 'active',
             startDate || null,
             endDate || null,
-            Array.isArray(schedules) ? JSON.stringify(schedules) : null,
+            JSON.stringify(Array.isArray(schedules) ? schedules : []),
             context.actorId
         );
         return ok(context, result);
