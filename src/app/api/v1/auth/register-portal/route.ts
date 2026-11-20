@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
                 return fail(400, 'Validation Error', 'Please select a valid relationship.');
             }
         }
-        if (email && (email.length > 254 || email.split('@')[0].length > 64 || /\.\./.test(email) || !EMAIL.test(email))) {
+        if (!email || email.length > 254 || email.split('@')[0].length > 64 || /\.\./.test(email) || !EMAIL.test(email)) {
             return fail(400, 'Validation Error', 'Enter a valid email address.');
         }
         if (!isValidMobile(phone)) {

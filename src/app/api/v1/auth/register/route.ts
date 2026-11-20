@@ -52,8 +52,8 @@ export async function POST(req: NextRequest) {
         const { academyType, planTier, acceptTerms } = body;
         const password = typeof body.password === 'string' ? body.password : '';
 
-        if (!academyName || !firstName || !lastName || !phone || !password) {
-            return fail(400, 'Validation Error', 'Please fill in all required fields.');
+        if (!academyName || !firstName || !lastName || !email || !phone || !password) {
+            return fail(400, 'Validation Error', 'Please fill in all required fields (including email address).');
         }
         if (academyName.length < 3 || academyName.length > 100 || !ACADEMY_NAME.test(academyName)) {
             return fail(400, 'Validation Error', "Academy name must be 3 to 100 characters, starting with a letter, using letters, spaces and & ' . , ( ) - / only (no numbers).");
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
         if (lastName.length > 50 || !NAME.test(lastName)) {
             return fail(400, 'Validation Error', 'Last name must be up to 50 letters (spaces, apostrophes, hyphens and dots allowed).');
         }
-        if (email && (email.length > 254 || email.split('@')[0].length > 64 || /\.\./.test(email) || !EMAIL.test(email))) {
+        if (!email || email.length > 254 || email.split('@')[0].length > 64 || /\.\./.test(email) || !EMAIL.test(email)) {
             return fail(400, 'Validation Error', 'Enter a valid email address.');
         }
         if (!isValidMobile(phone)) {
@@ -72,8 +72,14 @@ export async function POST(req: NextRequest) {
         }
         const pwProblem = passwordProblem(password);
         if (pwProblem) return fail(400, 'Validation Error', pwProblem);
-        if (!ACADEMY_TYPES.includes(academyType)) {
-            return fail(400, 'Validation Error', `Class category must be one of: ${ACADEMY_TYPES.join(', ')}.`);
+        const isKnownType = ACADEMY_TYPES.includes(academyType);
+        const isValidCustomType = typeof academyType === 'string' &&
+            academyType.trim().length >= 2 &&
+            academyType.trim().length <= 50 &&
+            !/\d/.test(academyType) &&
+            ACADEMY_NAME.test(academyType.trim());
+        if (!isKnownType && !isValidCustomType) {
+            return fail(400, 'Validation Error', 'Class category name must be 2 to 50 characters and cannot contain numbers.');
         }
         if (acceptTerms !== true) {
             return fail(400, 'Validation Error', 'Please accept the Terms of Service and Privacy Policy.');
