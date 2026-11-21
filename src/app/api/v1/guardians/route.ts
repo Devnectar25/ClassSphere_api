@@ -42,3 +42,33 @@ export async function POST(req: NextRequest) {
         return fail(err, context, req);
     }
 }
+
+/**
+ * Updates a guardian's profile, contact information, and linked students.
+ */
+export async function PUT(req: NextRequest) {
+    const context = await authorize(req, 'guardians.write');
+    if (context instanceof Response) return context;
+    try {
+        const { guardianId, firstName, lastName, relationship, phone, email, isPrimary, studentIds } = await req.json();
+        if (!guardianId || !firstName?.trim() || !lastName?.trim() || !phone?.trim() || !email?.trim()) {
+            return problem(context, req, 400, 'Validation Error', 'Guardian ID, first name, last name, phone, and email are required.');
+        }
+
+        const result = await callFn('academics.fn_guardian_update',
+            context.tenantId,
+            guardianId,
+            firstName.trim(),
+            lastName.trim(),
+            relationship || 'Parent',
+            phone.trim(),
+            email.trim().toLowerCase(),
+            isPrimary !== undefined ? Boolean(isPrimary) : null,
+            Array.isArray(studentIds) && studentIds.length > 0 ? studentIds : null,
+            context.actorId
+        );
+        return ok(context, result);
+    } catch (err) {
+        return fail(err, context, req);
+    }
+}

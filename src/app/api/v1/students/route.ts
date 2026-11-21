@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { callFn, query } from '@/lib/db/db';
+import { generatePassword, hashPassword } from '@/lib/auth';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
 
@@ -86,6 +87,59 @@ export async function POST(req: NextRequest) {
                 }
             }
             formattedPhone = `${countryCode} ${phoneDigits}`.trim();
+        }
+
+        // Validate guardian information if provided
+        const guardian = body.guardian;
+        let formattedGuardianPhone: string | null = null;
+        if (guardian) {
+            if (guardian.mode === 'existing') {
+                if (!guardian.guardianId) {
+                    return problem(context, req, 400, 'Validation Error', 'Please select an existing guardian to link.');
+                }
+            } else {
+                const gFirstName = String(guardian.firstName ?? '').trim();
+                const gLastName = String(guardian.lastName ?? '').trim();
+                const gEmail = String(guardian.email ?? '').trim().toLowerCase();
+                const gRawPhone = String(guardian.phone ?? '').trim();
+                const gCountryCode = String(guardian.countryCode ?? '+91').trim();
+
+                if (!gFirstName || !gLastName) {
+                    return problem(context, req, 400, 'Validation Error', 'Guardian first and last name are required.');
+                }
+                if (gFirstName.length < 2 || !/^[a-zA-Z\s'-]+$/.test(gFirstName)) {
+                    return problem(context, req, 400, 'Validation Error', 'Guardian first name must contain only letters and be at least 2 characters.');
+                }
+                if (gLastName.length < 2 || !/^[a-zA-Z\s'-]+$/.test(gLastName)) {
+                    return problem(context, req, 400, 'Validation Error', 'Guardian last name must contain only letters and be at least 2 characters.');
+                }
+                if (!gEmail || !/^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(gEmail)) {
+                    return problem(context, req, 400, 'Validation Error', 'Enter a valid guardian email address.');
+                }
+                if (!gRawPhone) {
+                    return problem(context, req, 400, 'Validation Error', 'Guardian phone number is required.');
+                }
+
+                let gLocalDigits = gRawPhone;
+                if (gCountryCode && gLocalDigits.startsWith(gCountryCode)) {
+                    gLocalDigits = gLocalDigits.slice(gCountryCode.length).trim();
+                } else if (gLocalDigits.startsWith('+')) {
+                    const parts = gLocalDigits.split(/\s+/);
+                    if (parts.length > 1) gLocalDigits = parts.slice(1).join('');
+                }
+                const gDigits = gLocalDigits.replace(/\D/g, '');
+                const isGIndia = gCountryCode === '+91' || gRawPhone.startsWith('+91') || (!gCountryCode && gDigits.length === 10);
+                if (isGIndia) {
+                    if (gDigits.length !== 10 || !/^[6-9]\d{9}$/.test(gDigits)) {
+                        return problem(context, req, 400, 'Validation Error', 'Enter a valid 10-digit mobile number for the guardian starting with 6, 7, 8, or 9.');
+                    }
+                } else {
+                    if (gDigits.length < 7 || gDigits.length > 15) {
+                        return problem(context, req, 400, 'Validation Error', 'Enter a valid mobile number for the guardian.');
+                    }
+                }
+                formattedGuardianPhone = `${gCountryCode} ${gDigits}`.trim();
+            }
         }
 
         // Branch-scoped users always enroll into their own branch
@@ -182,7 +236,27 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        return ok(context, result, 201);
+        let guardianCredentials: { name: string; email: string; password?: string } | null = null;
+        if (result?.studentId && guardian) {
+            if (guardian.mode === 'existing' && guardian.guardianId) {
+                await callFn('academics.fn_guardian_link_student', context.tenantId, guardian.guardianId, result.studentId, context.actorId);
+            } else if (guardian.firstName && guardian.lastName) {
+                const gFirstName = String(guardian.firstName).trim();
+                const gLastName = String(guardian.lastName).trim();
+                const gEmail = String(guardian.email).trim().toLowerCase();
+                const createdGuardian = await callFn<{ guardianId: string }>('academics.fn_guardian_create',
+                    context.tenantId, gFirstName, gLastName, guardian.relationship || 'Parent', formattedGuardianPhone || guardian.phone, gEmail, [result.studentId], context.actorId);
+
+                if (guardian.createLogin && createdGuardian?.guardianId) {
+                    const password = generatePassword();
+                    const login = await callFn<{ email: string }>('academics.fn_guardian_portal_enable',
+                        context.tenantId, createdGuardian.guardianId, hashPassword(password), context.actorId);
+                    guardianCredentials = { name: `${gFirstName} ${gLastName}`, email: login.email, password };
+                }
+            }
+        }
+
+        return ok(context, { ...result, credentials: guardianCredentials }, 201);
     } catch (err) {
         return fail(err, context, req);
     }
@@ -211,6 +285,15 @@ export async function PUT(req: NextRequest) {
             return problem(context, req, 400, 'Validation Error', 'First name, last name, and email are required fields.');
         }
 
+        // Check if student is being transferred/migrated to another branch
+        const existingStudentRows = await query<{ branch_id: string }>(
+            `SELECT branch_id FROM academics.students WHERE student_id = $1 AND tenant_id = $2`,
+            [studentId, context.tenantId]
+        );
+        const oldBranchId = existingStudentRows[0]?.branch_id;
+        const newBranchId = branchId || null;
+        const isBranchSwitched = Boolean(newBranchId && oldBranchId && newBranchId !== oldBranchId);
+
         // Update student record with tenant scoping
         const updateRes = await query<{
             student_id: string;
@@ -231,11 +314,25 @@ export async function PUT(req: NextRequest) {
                  updated_at = clock_timestamp()
              WHERE student_id = $7 AND tenant_id = $8
              RETURNING student_id, enrollment_number, first_name, last_name, email, phone, status`,
-            [firstName, lastName, email, phone, status, branchId, studentId, context.tenantId]
+            [firstName, lastName, email, phone, status, newBranchId, studentId, context.tenantId]
         );
 
         if (updateRes.length === 0) {
             return problem(context, req, 404, 'Not Found', 'Student not found.');
+        }
+
+        // When switching/migrating student to another branch, remove them from batches belonging to the previous branch
+        if (isBranchSwitched) {
+            await query(
+                `DELETE FROM academics.enrollments
+                 WHERE student_id = $1
+                   AND tenant_id = $2
+                   AND batch_id IN (
+                       SELECT batch_id FROM academics.batches
+                       WHERE branch_id <> $3 AND tenant_id = $2
+                   )`,
+                [studentId, context.tenantId, newBranchId]
+            );
         }
 
         // If batchId is specified, enroll or update student batch enrollment

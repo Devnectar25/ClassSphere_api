@@ -22,7 +22,7 @@ async function authorizePortal(req: NextRequest) {
     if (context instanceof Response || context.actorRole === 'Guardian' || context.isPlatformAdmin || can(context.actorRole, 'portal.read')) {
         return context;
     }
-    return authorize(req, 'portal.read');
+    return await authorize(req, 'portal.read');
 }
 
 async function loadHousehold(context: RequestContext, guardianId: string | null) {

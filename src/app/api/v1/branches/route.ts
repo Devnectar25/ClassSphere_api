@@ -56,3 +56,32 @@ export async function PUT(req: NextRequest) {
         return fail(err, context, req);
     }
 }
+
+/**
+ * Branch deletion
+ */
+export async function DELETE(req: NextRequest) {
+    const context = await authorize(req, 'branches.write');
+    if (context instanceof Response) return context;
+    try {
+        const searchParams = req.nextUrl.searchParams;
+        let branchId = searchParams.get('branchId');
+        if (!branchId) {
+            const body = await req.json().catch(() => ({}));
+            branchId = body?.branchId;
+        }
+
+        if (!branchId) {
+            return problem(context, req, 400, 'Validation Error', 'Branch ID is required.');
+        }
+
+        const result = await callFn('tenant.fn_branch_delete',
+            context.tenantId,
+            branchId,
+            context.actorId
+        );
+        return ok(context, result);
+    } catch (err) {
+        return fail(err, context, req);
+    }
+}

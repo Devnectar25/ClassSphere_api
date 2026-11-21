@@ -214,6 +214,99 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION tenant.fn_branch_delete(
+    p_tenant_id UUID,
+    p_branch_id UUID,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = tenant, academics, engagement, audit, public
+AS $$
+DECLARE
+    v_branch RECORD;
+    v_primary_branch_id UUID;
+    v_reassigned_students INT := 0;
+    v_reassigned_batches INT := 0;
+BEGIN
+    SELECT * INTO v_branch
+    FROM tenant.branches
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Branch not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF v_branch.is_primary THEN
+        RAISE EXCEPTION 'Primary campus branch cannot be deleted' USING ERRCODE = '22023';
+    END IF;
+
+    -- Locate the tenant primary campus branch to safely receive reassigned records
+    SELECT branch_id INTO v_primary_branch_id
+    FROM tenant.branches
+    WHERE tenant_id = p_tenant_id AND is_primary = TRUE
+    LIMIT 1;
+
+    IF v_primary_branch_id IS NULL THEN
+        SELECT branch_id INTO v_primary_branch_id
+        FROM tenant.branches
+        WHERE tenant_id = p_tenant_id AND branch_id <> p_branch_id
+        ORDER BY created_at ASC
+        LIMIT 1;
+    END IF;
+
+    IF v_primary_branch_id IS NULL THEN
+        RAISE EXCEPTION 'Cannot delete the only branch of the academy' USING ERRCODE = '22023';
+    END IF;
+
+    -- Reassign students whose home branch is this branch to primary branch
+    UPDATE academics.students
+    SET branch_id = v_primary_branch_id,
+        updated_at = clock_timestamp()
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+    GET DIAGNOSTICS v_reassigned_students = ROW_COUNT;
+
+    -- Reassign batches belonging to this branch to primary branch
+    UPDATE academics.batches
+    SET branch_id = v_primary_branch_id
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+    GET DIAGNOSTICS v_reassigned_batches = ROW_COUNT;
+
+    -- Reassign staff memberships assigned to this branch
+    UPDATE tenant.memberships
+    SET branch_id = v_primary_branch_id
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+
+    -- Reassign branch-specific notices
+    UPDATE engagement.notices
+    SET branch_id = v_primary_branch_id
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+
+    -- Delete the branch record
+    DELETE FROM tenant.branches
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+
+    -- Audit log
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'branch.deleted', 'branch', p_branch_id::text, gen_random_uuid()::text,
+            jsonb_build_object(
+                'name', v_branch.name,
+                'code', v_branch.code,
+                'reassignedToBranchId', v_primary_branch_id,
+                'reassignedStudents', v_reassigned_students,
+                'reassignedBatches', v_reassigned_batches
+            ));
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'deletedBranchId', p_branch_id,
+        'reassignedToBranchId', v_primary_branch_id,
+        'reassignedStudents', v_reassigned_students,
+        'reassignedBatches', v_reassigned_batches
+    );
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION tenant.fn_entitlement_check(
     p_tenant_id UUID,
     p_metric VARCHAR(50)
@@ -283,9 +376,18 @@ AS $$
                 SELECT br.branch_id, br.name, br.code, br.address, br.city, br.state, br.country, br.location, br.pincode, br.phone, br.email,
                        br.is_primary, br.is_active, hu.full_name AS head_name,
                        (SELECT COUNT(*) FROM academics.batches bt WHERE bt.branch_id = br.branch_id) AS batch_count,
-                       (SELECT COUNT(DISTINCT e.student_id)
-                        FROM academics.enrollments e JOIN academics.batches bt ON bt.batch_id = e.batch_id
-                        WHERE bt.branch_id = br.branch_id AND e.status = 'enrolled') AS student_count
+                       (SELECT COUNT(DISTINCT s.student_id)
+                        FROM academics.students s
+                        WHERE s.tenant_id = o.tenant_id
+                          AND s.status <> 'withdrawn'
+                          AND (
+                              s.branch_id = br.branch_id
+                              OR (s.branch_id IS NULL AND s.student_id IN (
+                                  SELECT e.student_id FROM academics.enrollments e
+                                  JOIN academics.batches bt ON bt.batch_id = e.batch_id
+                                  WHERE bt.branch_id = br.branch_id AND e.status = 'enrolled'
+                              ))
+                          )) AS student_count
                 FROM tenant.branches br
                 LEFT JOIN identity_app.users hu ON hu.user_id = br.head_user_id
                 WHERE br.tenant_id = o.tenant_id
