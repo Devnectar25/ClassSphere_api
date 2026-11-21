@@ -104,8 +104,8 @@ BEGIN
             IF p_admin_password_hash IS NULL THEN
                 RAISE EXCEPTION 'A password is required for the new academy admin' USING ERRCODE = '22023';
             END IF;
-            INSERT INTO identity_app.users (email, password_hash, full_name)
-            VALUES (lower(p_admin_email), p_admin_password_hash, COALESCE(p_admin_name, p_admin_email))
+            INSERT INTO identity_app.users (email, password_hash, full_name, email_verified_at)
+            VALUES (lower(p_admin_email), p_admin_password_hash, COALESCE(p_admin_name, p_admin_email), clock_timestamp())
             RETURNING user_id INTO v_admin_id;
         END IF;
         INSERT INTO tenant.memberships (tenant_id, user_id, branch_id, role, title, permissions)
@@ -316,6 +316,7 @@ AS $$
 BEGIN
     UPDATE tenant.organizations
     SET name = COALESCE(p_name, name),
+        academy_type = COALESCE(NULLIF(p_settings->>'category', ''), academy_type),
         currency = COALESCE(p_currency, currency),
         timezone = COALESCE(p_timezone, timezone),
         branding = branding || COALESCE(p_branding, '{}'::jsonb),
@@ -325,6 +326,30 @@ BEGIN
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Tenant not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    -- Synchronize primary branch address fields if provided in settings
+    IF p_settings IS NOT NULL THEN
+        UPDATE tenant.branches
+        SET address = COALESCE(NULLIF(p_settings->>'address', ''), address),
+            city = COALESCE(NULLIF(p_settings->>'city', ''), city),
+            state = COALESCE(NULLIF(p_settings->>'state', ''), state),
+            country = COALESCE(NULLIF(p_settings->>'country', ''), country),
+            location = COALESCE(NULLIF(p_settings->>'location', ''), location),
+            pincode = COALESCE(NULLIF(p_settings->>'location', ''), pincode),
+            phone = COALESCE(NULLIF(p_settings->>'phone', ''), phone),
+            email = COALESCE(NULLIF(p_settings->>'email', ''), email)
+        WHERE tenant_id = p_tenant_id AND is_primary = true;
+
+        -- Synchronize owner contact details in identity_app.users if provided
+        IF p_settings->'contact' IS NOT NULL THEN
+            UPDATE identity_app.users u
+            SET full_name = COALESCE(NULLIF(p_settings->'contact'->>'name', ''), u.full_name),
+                email = COALESCE(NULLIF(p_settings->'contact'->>'email', ''), u.email),
+                phone = COALESCE(NULLIF(p_settings->'contact'->>'phone', ''), u.phone)
+            FROM tenant.memberships m
+            WHERE m.tenant_id = p_tenant_id AND m.role = 'TenantAdmin' AND m.user_id = u.user_id;
+        END IF;
     END IF;
 
     INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
@@ -423,8 +448,15 @@ BEGIN
 
     SELECT user_id INTO v_user_id FROM identity_app.users WHERE lower(email) = lower(p_email);
     IF v_user_id IS NULL THEN
-        INSERT INTO identity_app.users (email, password_hash, full_name, phone)
-        VALUES (lower(p_email), p_password_hash, p_full_name, p_phone)
+        INSERT INTO identity_app.users (email, password_hash, full_name, phone, email_verified_at, phone_verified_at)
+        VALUES (
+            lower(p_email),
+            p_password_hash,
+            p_full_name,
+            p_phone,
+            CASE WHEN p_email IS NOT NULL THEN clock_timestamp() ELSE NULL END,
+            CASE WHEN p_phone IS NOT NULL THEN clock_timestamp() ELSE NULL END
+        )
         RETURNING user_id INTO v_user_id;
     END IF;
 
@@ -520,7 +552,11 @@ SECURITY DEFINER
 SET search_path = identity_app, audit, public
 AS $$
 BEGIN
-    UPDATE identity_app.users SET last_login_at = clock_timestamp() WHERE user_id = p_user_id;
+    UPDATE identity_app.users
+    SET last_login_at = clock_timestamp(),
+        email_verified_at = CASE WHEN email IS NOT NULL THEN COALESCE(email_verified_at, clock_timestamp()) ELSE NULL END,
+        phone_verified_at = CASE WHEN phone IS NOT NULL THEN COALESCE(phone_verified_at, clock_timestamp()) ELSE NULL END
+    WHERE user_id = p_user_id;
     INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
     VALUES (p_tenant_id, p_user_id, 'auth.login', 'user', p_user_id::text, gen_random_uuid()::text, '{}'::jsonb);
     RETURN jsonb_build_object('success', true);

@@ -24,9 +24,11 @@ export async function GET(req: NextRequest) {
     }
     const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '10', 10) || 10, 1), 100);
     const offset = Math.max(parseInt(searchParams.get('offset') || '0', 10) || 0, 0);
+    const roleParam = searchParams.get('role');
+    const role = roleParam === 'all' ? null : (roleParam || 'TenantAdmin');
 
     try {
-        const result = await callFn('platform.fn_users_list', query, status, limit, offset);
+        const result = await callFn('platform.fn_users_list', query, status, limit, offset, role);
         return ok(context, result);
     } catch (err) {
         return fail(err, context, req);
@@ -45,6 +47,18 @@ export async function PATCH(req: NextRequest) {
         if (typeof userId !== 'string' || !UUID.test(userId)) {
             return problem(context, req, 400, 'Validation Error', 'A valid userId is required.');
         }
+
+        if (body?.verifyEmail !== undefined || body?.verifyPhone !== undefined) {
+            const result = await callFn(
+                'platform.fn_user_verify',
+                userId,
+                Boolean(body?.verifyEmail),
+                Boolean(body?.verifyPhone),
+                context.actorId
+            );
+            return ok(context, result);
+        }
+
         if (typeof isSuspended !== 'boolean') {
             return problem(context, req, 400, 'Validation Error', 'isSuspended must be true (suspend) or false (reactivate).');
         }

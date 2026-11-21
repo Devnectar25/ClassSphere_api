@@ -58,13 +58,18 @@ BEGIN
         v_result := tenant.fn_tenant_create(trim(p_name), v_slug, p_academy_type, NULL, NULL, p_plan_tier,
                                             trim(p_admin_name), v_email, p_admin_password_hash, NULL);
         v_admin_id := (v_result->>'adminUserId')::UUID;
-        UPDATE identity_app.users SET phone = v_phone WHERE user_id = v_admin_id;
+        UPDATE identity_app.users
+        SET phone = v_phone,
+            phone_verified_at = CASE WHEN v_phone IS NOT NULL THEN clock_timestamp() ELSE NULL END,
+            email_verified_at = clock_timestamp()
+        WHERE user_id = v_admin_id;
     ELSE
         -- No email: create the workspace without an admin, then the mobile-only owner and their membership
         v_result := tenant.fn_tenant_create(trim(p_name), v_slug, p_academy_type, NULL, NULL, p_plan_tier,
                                             NULL, NULL, NULL, NULL);
-        INSERT INTO identity_app.users (email, password_hash, full_name, phone)
-        VALUES (NULL, p_admin_password_hash, trim(p_admin_name), v_phone)
+        INSERT INTO identity_app.users (email, password_hash, full_name, phone, phone_verified_at)
+        VALUES (NULL, p_admin_password_hash, trim(p_admin_name), v_phone,
+                CASE WHEN v_phone IS NOT NULL THEN clock_timestamp() ELSE NULL END)
         RETURNING user_id INTO v_admin_id;
         INSERT INTO tenant.memberships (tenant_id, user_id, branch_id, role, title, permissions)
         VALUES ((v_result->>'tenantId')::UUID, v_admin_id, NULL, 'TenantAdmin', 'Academy Administrator', ARRAY['*']);
@@ -165,8 +170,15 @@ BEGIN
         RAISE EXCEPTION 'An account with this mobile number already exists. Sign in instead.' USING ERRCODE = '23505';
     END IF;
 
-    INSERT INTO identity_app.users (email, password_hash, full_name, phone)
-    VALUES (v_email, p_password_hash, v_full_name, v_phone)
+    INSERT INTO identity_app.users (email, password_hash, full_name, phone, email_verified_at, phone_verified_at)
+    VALUES (
+        v_email,
+        p_password_hash,
+        v_full_name,
+        v_phone,
+        CASE WHEN v_email IS NOT NULL THEN clock_timestamp() ELSE NULL END,
+        CASE WHEN v_phone IS NOT NULL THEN clock_timestamp() ELSE NULL END
+    )
     RETURNING user_id INTO v_user_id;
 
     INSERT INTO tenant.memberships (tenant_id, user_id, branch_id, role, title, permissions)

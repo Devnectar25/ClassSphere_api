@@ -558,8 +558,15 @@ BEGIN
         SELECT user_id INTO v_user_id FROM identity_app.users WHERE lower(email) = lower(v_guardian.email);
     END IF;
     IF v_user_id IS NULL THEN
-        INSERT INTO identity_app.users (email, password_hash, full_name, phone)
-        VALUES (lower(v_guardian.email), p_password_hash, v_guardian.first_name || ' ' || v_guardian.last_name, v_guardian.phone)
+        INSERT INTO identity_app.users (email, password_hash, full_name, phone, email_verified_at, phone_verified_at)
+        VALUES (
+            lower(v_guardian.email),
+            p_password_hash,
+            v_guardian.first_name || ' ' || v_guardian.last_name,
+            v_guardian.phone,
+            CASE WHEN v_guardian.email IS NOT NULL THEN clock_timestamp() ELSE NULL END,
+            CASE WHEN v_guardian.phone IS NOT NULL THEN clock_timestamp() ELSE NULL END
+        )
         RETURNING user_id INTO v_user_id;
     ELSE
         -- If user already exists, do not overwrite their existing password

@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
  * Branch update
  */
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'branches.write');
+    const context = await authorize(req, 'branches.write');
     if (context instanceof Response) return context;
     try {
         const { branchId, name, code, address, phone, headUserId, isPrimary, isActive } = await req.json();

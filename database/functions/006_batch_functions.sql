@@ -5,6 +5,7 @@
 
 -- Creates a new batch with its weekly schedule.
 -- p_schedules: array of { weekday: 1-7 (ISO, 1 = Monday), startTime: 'HH:MM', endTime: 'HH:MM', sessionType: string }
+DROP FUNCTION IF EXISTS academics.fn_batch_create(UUID, UUID, UUID, VARCHAR, UUID, VARCHAR, INT, VARCHAR, DATE, DATE, JSONB, UUID);
 CREATE OR REPLACE FUNCTION academics.fn_batch_create(
     p_tenant_id UUID,
     p_name VARCHAR(150),
@@ -103,6 +104,7 @@ $$;
 
 -- Updates a batch's details and replaces its weekly schedule in one transaction.
 -- p_schedules: array of { weekday: 1-7 (ISO, 1 = Monday), startTime: 'HH:MM', endTime: 'HH:MM', sessionType: string }
+DROP FUNCTION IF EXISTS academics.fn_batch_update(UUID, UUID, UUID, UUID, VARCHAR, UUID, VARCHAR, INT, VARCHAR, DATE, DATE, JSONB, UUID);
 CREATE OR REPLACE FUNCTION academics.fn_batch_update(
     p_tenant_id UUID,
     p_batch_id UUID,

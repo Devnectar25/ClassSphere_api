@@ -27,10 +27,14 @@ AS $$
 $$;
 
 -- Shared filter for listing and export
+DROP FUNCTION IF EXISTS identity_app.fn_user_matches_filter(identity_app.users, TEXT, TEXT);
+DROP FUNCTION IF EXISTS identity_app.fn_user_matches_filter(identity_app.users, TEXT, TEXT, TEXT);
+
 CREATE OR REPLACE FUNCTION identity_app.fn_user_matches_filter(
     p_user identity_app.users,
     p_query TEXT,
-    p_status TEXT
+    p_status TEXT,
+    p_role TEXT DEFAULT NULL
 ) RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
@@ -39,10 +43,21 @@ AS $$
             OR p_user.full_name ILIKE '%' || btrim(p_query) || '%'
             OR p_user.email ILIKE '%' || btrim(p_query) || '%'
             OR p_user.phone ILIKE '%' || btrim(p_query) || '%'
-            OR p_user.user_id::text ILIKE btrim(p_query) || '%')
+            OR COALESCE(p_user.user_code, '') ILIKE '%' || btrim(p_query) || '%'
+            OR p_user.user_id::text ILIKE btrim(p_query) || '%'
+            OR EXISTS (
+                SELECT 1 FROM tenant.memberships m
+                JOIN tenant.organizations o ON o.tenant_id = m.tenant_id
+                WHERE m.user_id = p_user.user_id AND o.name ILIKE '%' || btrim(p_query) || '%'
+            ))
        AND (p_status IS NULL OR p_status = 'all'
             OR (p_status = 'suspended' AND p_user.is_suspended)
-            OR (p_status = 'active' AND NOT p_user.is_suspended AND p_user.is_active));
+            OR (p_status = 'active' AND NOT p_user.is_suspended AND p_user.is_active))
+       AND (p_role IS NULL
+            OR EXISTS (
+                SELECT 1 FROM tenant.memberships m
+                WHERE m.user_id = p_user.user_id AND m.role = p_role
+            ));
 $$;
 
 -- One listing row (also used by the export)
@@ -56,6 +71,7 @@ SET search_path = identity_app, tenant, academics, public
 AS $$
     SELECT jsonb_build_object(
         'user_id', p_user.user_id,
+        'user_code', COALESCE(p_user.user_code, 'USR-' || p_user.user_id::text),
         'full_name', p_user.full_name,
         'email', p_user.email,
         'phone', p_user.phone,
@@ -72,6 +88,13 @@ AS $$
         'created_at', p_user.created_at,
         'last_login_at', p_user.last_login_at,
         'last_activity_at', p_user.last_activity_at,
+        'academy_name', (
+            SELECT o.name FROM tenant.memberships m
+            JOIN tenant.organizations o ON o.tenant_id = m.tenant_id
+            WHERE m.user_id = p_user.user_id AND m.role = 'TenantAdmin'
+            ORDER BY m.created_at ASC
+            LIMIT 1
+        ),
         'enrollment_count', (
             SELECT COUNT(*) FROM academics.enrollments e
             WHERE e.student_id IN (SELECT student_id FROM identity_app.fn_user_student_ids(p_user.user_id))
@@ -80,11 +103,15 @@ AS $$
     );
 $$;
 
+DROP FUNCTION IF EXISTS platform.fn_users_list(TEXT, TEXT, INT, INT);
+DROP FUNCTION IF EXISTS platform.fn_users_list(TEXT, TEXT, INT, INT, TEXT);
+
 CREATE OR REPLACE FUNCTION platform.fn_users_list(
     p_query TEXT DEFAULT NULL,
     p_status TEXT DEFAULT NULL,
     p_limit INT DEFAULT 10,
-    p_offset INT DEFAULT 0
+    p_offset INT DEFAULT 0,
+    p_role TEXT DEFAULT NULL
 ) RETURNS JSONB
 LANGUAGE plpgsql
 STABLE
@@ -102,25 +129,25 @@ BEGIN
 
     SELECT COUNT(*) INTO v_total
     FROM identity_app.users u
-    WHERE identity_app.fn_user_matches_filter(u, p_query, p_status);
+    WHERE identity_app.fn_user_matches_filter(u, p_query, p_status, p_role);
 
     SELECT COALESCE(jsonb_agg(identity_app.fn_user_row(u) ORDER BY u.created_at DESC), '[]'::jsonb) INTO v_users
     FROM identity_app.users u
     WHERE u.user_id IN (
         SELECT f.user_id FROM identity_app.users f
-        WHERE identity_app.fn_user_matches_filter(f, p_query, p_status)
+        WHERE identity_app.fn_user_matches_filter(f, p_query, p_status, p_role)
         ORDER BY f.created_at DESC
         LIMIT GREATEST(LEAST(p_limit, 100), 1) OFFSET GREATEST(p_offset, 0)
     );
 
-    -- Tab counts honour the search text but not the status filter
+    -- Tab counts honour the search text and role filter, but not the status filter
     SELECT jsonb_build_object(
         'all', COUNT(*),
         'active', COUNT(*) FILTER (WHERE NOT u.is_suspended AND u.is_active),
         'suspended', COUNT(*) FILTER (WHERE u.is_suspended)
     ) INTO v_counts
     FROM identity_app.users u
-    WHERE identity_app.fn_user_matches_filter(u, p_query, NULL);
+    WHERE identity_app.fn_user_matches_filter(u, p_query, NULL, p_role);
 
     RETURN jsonb_build_object(
         'total', v_total,
@@ -133,11 +160,14 @@ END;
 $$;
 
 DROP FUNCTION IF EXISTS platform.fn_users_export(TEXT, TEXT);
+DROP FUNCTION IF EXISTS platform.fn_users_export(TEXT, TEXT, UUID);
+DROP FUNCTION IF EXISTS platform.fn_users_export(TEXT, TEXT, UUID, TEXT);
 
 CREATE OR REPLACE FUNCTION platform.fn_users_export(
     p_query TEXT DEFAULT NULL,
     p_status TEXT DEFAULT NULL,
-    p_actor_id UUID DEFAULT NULL
+    p_actor_id UUID DEFAULT NULL,
+    p_role TEXT DEFAULT NULL
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -154,14 +184,14 @@ BEGIN
     FROM identity_app.users u
     WHERE u.user_id IN (
         SELECT f.user_id FROM identity_app.users f
-        WHERE identity_app.fn_user_matches_filter(f, p_query, p_status)
+        WHERE identity_app.fn_user_matches_filter(f, p_query, p_status, p_role)
         ORDER BY f.created_at DESC
         LIMIT 10000
     );
 
     INSERT INTO audit.compliance_logs (actor_id, action, entity_type, entity_id, correlation_id, details)
     VALUES (p_actor_id, 'user.exported', 'user', NULL, gen_random_uuid()::text,
-            jsonb_build_object('query', p_query, 'status', COALESCE(p_status, 'all'), 'rowCount', jsonb_array_length(v_users)));
+            jsonb_build_object('query', p_query, 'status', COALESCE(p_status, 'all'), 'role', COALESCE(p_role, 'TenantAdmin'), 'rowCount', jsonb_array_length(v_users)));
 
     RETURN jsonb_build_object('users', v_users, 'exportedAt', clock_timestamp());
 END;
@@ -415,3 +445,61 @@ BEGIN
                               'action', v_action, 'notified', v_notified, 'correlationId', v_correlation);
 END;
 $$;
+
+-- Manually verify email and/or mobile credentials of a user account.
+CREATE OR REPLACE FUNCTION platform.fn_user_verify(
+    p_user_id UUID,
+    p_verify_email BOOLEAN,
+    p_verify_phone BOOLEAN,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = identity_app, platform, audit, tenant, public
+AS $$
+DECLARE
+    v_actor identity_app.users;
+    v_user identity_app.users;
+    v_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+    SELECT * INTO v_actor FROM identity_app.users WHERE user_id = p_actor_id;
+    IF NOT FOUND OR NOT v_actor.is_platform_admin OR NOT v_actor.is_active OR v_actor.is_suspended THEN
+        RAISE EXCEPTION 'Only active platform administrators can verify user credentials.' USING ERRCODE = '42501';
+    END IF;
+
+    SELECT * INTO v_user FROM identity_app.users WHERE user_id = p_user_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'User % not found', p_user_id USING ERRCODE = 'P0002';
+    END IF;
+
+    UPDATE identity_app.users
+    SET email_verified_at = CASE WHEN p_verify_email AND email IS NOT NULL THEN COALESCE(email_verified_at, v_now) ELSE email_verified_at END,
+        phone_verified_at = CASE WHEN p_verify_phone AND phone IS NOT NULL THEN COALESCE(phone_verified_at, v_now) ELSE phone_verified_at END,
+        updated_at = v_now
+    WHERE user_id = p_user_id;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (
+        (SELECT tenant_id FROM tenant.memberships WHERE user_id = p_user_id ORDER BY created_at LIMIT 1),
+        p_actor_id,
+        'user.verified',
+        'user',
+        p_user_id::text,
+        gen_random_uuid()::text,
+        jsonb_build_object(
+            'verifyEmail', p_verify_email,
+            'verifyPhone', p_verify_phone,
+            'email', v_user.email,
+            'phone', v_user.phone
+        )
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'userId', p_user_id,
+        'emailVerified', (SELECT email_verified_at IS NOT NULL FROM identity_app.users WHERE user_id = p_user_id),
+        'phoneVerified', (SELECT phone_verified_at IS NOT NULL FROM identity_app.users WHERE user_id = p_user_id)
+    );
+END;
+$$;
+
