@@ -154,6 +154,66 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION tenant.fn_branch_update(
+    p_tenant_id UUID,
+    p_branch_id UUID,
+    p_name VARCHAR(150),
+    p_code VARCHAR(50),
+    p_address TEXT,
+    p_phone VARCHAR(50),
+    p_head_user_id UUID,
+    p_is_primary BOOLEAN,
+    p_is_active BOOLEAN,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = tenant, audit, public
+AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM tenant.branches WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Branch not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF trim(COALESCE(p_name, '')) = '' THEN
+        RAISE EXCEPTION 'Branch name is required' USING ERRCODE = '22023';
+    END IF;
+
+    IF trim(COALESCE(p_code, '')) = '' THEN
+        RAISE EXCEPTION 'Branch code is required' USING ERRCODE = '22023';
+    END IF;
+
+    -- Check unique code among other branches in this tenant
+    IF EXISTS (
+        SELECT 1 FROM tenant.branches
+        WHERE tenant_id = p_tenant_id AND branch_id <> p_branch_id AND upper(code) = upper(trim(p_code))
+    ) THEN
+        RAISE EXCEPTION 'A branch with this code already exists' USING ERRCODE = '23505';
+    END IF;
+
+    -- If this branch is being marked as primary, unmark other branches
+    IF p_is_primary = TRUE THEN
+        UPDATE tenant.branches SET is_primary = FALSE WHERE tenant_id = p_tenant_id AND branch_id <> p_branch_id;
+    END IF;
+
+    UPDATE tenant.branches
+    SET name = trim(p_name),
+        code = upper(trim(p_code)),
+        address = p_address,
+        phone = p_phone,
+        head_user_id = p_head_user_id,
+        is_primary = COALESCE(p_is_primary, is_primary),
+        is_active = COALESCE(p_is_active, is_active)
+    WHERE branch_id = p_branch_id AND tenant_id = p_tenant_id;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'branch.updated', 'branch', p_branch_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'code', p_code, 'isPrimary', p_is_primary, 'isActive', p_is_active));
+
+    RETURN jsonb_build_object('success', true, 'branchId', p_branch_id);
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION tenant.fn_entitlement_check(
     p_tenant_id UUID,
     p_metric VARCHAR(50)
