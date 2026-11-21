@@ -15,6 +15,48 @@ AS $$
     FROM platform.plans p;
 $$;
 
+CREATE OR REPLACE FUNCTION platform.fn_plan_update(
+    p_plan_tier VARCHAR(50),
+    p_description TEXT,
+    p_price_monthly NUMERIC(10,2),
+    p_currency VARCHAR(10),
+    p_max_seats INT,
+    p_max_branches INT,
+    p_features TEXT[],
+    p_is_popular BOOLEAN,
+    p_razorpay_plan_id VARCHAR(100) DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, public
+AS $$
+DECLARE
+    v_plan RECORD;
+BEGIN
+    IF p_is_popular IS TRUE THEN
+        UPDATE platform.plans SET is_popular = FALSE WHERE plan_tier <> p_plan_tier;
+    END IF;
+
+    UPDATE platform.plans
+    SET description = COALESCE(p_description, description),
+        price_monthly = COALESCE(p_price_monthly, price_monthly),
+        currency = COALESCE(p_currency, currency),
+        max_seats = COALESCE(p_max_seats, max_seats),
+        max_branches = COALESCE(p_max_branches, max_branches),
+        features = COALESCE(p_features, features),
+        is_popular = COALESCE(p_is_popular, is_popular),
+        razorpay_plan_id = COALESCE(p_razorpay_plan_id, razorpay_plan_id)
+    WHERE plan_tier = p_plan_tier
+    RETURNING * INTO v_plan;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Plan tier % not found', p_plan_tier USING ERRCODE = '22023';
+    END IF;
+
+    RETURN to_jsonb(v_plan);
+END;
+$$;
+
 DROP FUNCTION IF EXISTS tenant.fn_tenant_create(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, UUID, UUID);
 
 -- Provisions an academy: organization, main branch, subscription and (optionally) its admin sign-in
@@ -244,7 +286,8 @@ SET search_path = tenant, platform, academics, identity_app, public
 AS $$
     SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.created_at DESC), '[]'::jsonb)
     FROM (
-        SELECT o.tenant_id, o.name, o.slug, o.academy_type, o.status, o.currency, o.timezone, o.branding, o.created_at,
+        SELECT o.tenant_id, o.name, o.slug, o.academy_type, o.status, o.verification_status, o.rejection_reason,
+               o.commission_rate, o.documents, o.cover_image, o.description, o.currency, o.timezone, o.branding, o.created_at,
                (SELECT u.email FROM tenant.memberships m JOIN identity_app.users u ON u.user_id = m.user_id
                 WHERE m.tenant_id = o.tenant_id AND m.role = 'TenantAdmin' ORDER BY m.created_at LIMIT 1) AS admin_email,
                s.plan_tier, s.status AS subscription_status, s.mrr,
