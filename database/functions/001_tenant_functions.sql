@@ -280,7 +280,7 @@ AS $$
         'branches', COALESCE((
             SELECT jsonb_agg(to_jsonb(b) ORDER BY b.is_primary DESC, b.name)
             FROM (
-                SELECT br.branch_id, br.name, br.code, br.address, br.phone, br.email,
+                SELECT br.branch_id, br.name, br.code, br.address, br.city, br.state, br.country, br.location, br.pincode, br.phone, br.email,
                        br.is_primary, br.is_active, hu.full_name AS head_name,
                        (SELECT COUNT(*) FROM academics.batches bt WHERE bt.branch_id = br.branch_id) AS batch_count,
                        (SELECT COUNT(DISTINCT e.student_id)
@@ -484,14 +484,18 @@ AS $$
         'password_hash', u.password_hash,
         'is_active', u.is_active,
         'is_platform_admin', u.is_platform_admin,
+        'is_suspended', COALESCE(u.is_suspended, FALSE),
         'memberships', COALESCE((
             SELECT jsonb_agg(jsonb_build_object(
                 'tenant_id', o.tenant_id, 'tenant_name', o.name, 'academy_type', o.academy_type,
-                'role', m.role, 'branch_id', m.branch_id
-            ) ORDER BY m.role = 'Guardian', o.name)
+                'role', m.role, 'branch_id', m.branch_id,
+                'org_status', o.status,
+                'verification_status', o.verification_status,
+                'rejection_reason', o.rejection_reason
+            ) ORDER BY (o.status = 'active') DESC, m.role = 'Guardian', o.name)
             FROM tenant.memberships m
             JOIN tenant.organizations o ON o.tenant_id = m.tenant_id
-            WHERE m.user_id = u.user_id AND m.is_active AND o.status = 'active'
+            WHERE m.user_id = u.user_id AND m.is_active
         ), '[]'::jsonb)
     )
     FROM identity_app.users u

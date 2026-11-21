@@ -428,3 +428,57 @@ test('Courses, subjects, tests, grading & parent portal results', async (t) => {
         assert.deepEqual([asha1.result.grade, asha1.result.rank], ['A+', 1]);
     });
 });
+
+test('Platform users management: suspension & reactivation', async (t) => {
+    interface UserList { total: number; counts: { all: number; active: number; suspended: number }; users: Array<{ userId: string; accountStatus: string }> }
+    const [operator] = await query<{ user_id: string }>(
+        `INSERT INTO identity_app.users (email, password_hash, full_name, is_platform_admin) VALUES ($1, 'x', 'Ops Operator', TRUE) RETURNING user_id`,
+        [`ops.${suffix}@example.com`]);
+    const [readOnlyOp] = await query<{ user_id: string }>(
+        `INSERT INTO identity_app.users (email, password_hash, full_name, is_platform_admin) VALUES ($1, 'x', 'Finance Reader', TRUE) RETURNING user_id`,
+        [`finance.${suffix}@example.com`]);
+    await query(`INSERT INTO platform.admin_users (user_id, role, permissions) VALUES ($1, 'FinanceAdmin', ARRAY['finance:read'])`, [readOnlyOp.user_id]);
+    const [learner] = await query<{ user_id: string }>(
+        `INSERT INTO identity_app.users (email, password_hash, full_name) VALUES ($1, 'x', 'Learner Tester') RETURNING user_id`,
+        [`learner.${suffix}@example.com`]);
+    const suspend = (actorId: string, userId: string, reason: string | null) =>
+        callFn('platform.fn_user_status_update', userId, true, reason, actorId);
+
+    await t.test('only permitted platform operators may suspend, with a reason, never themselves or other operators', async () => {
+        await assert.rejects(suspend(learner.user_id, learner.user_id, 'Repeated chargebacks'), { code: '42501' });
+        await assert.rejects(suspend(readOnlyOp.user_id, learner.user_id, 'Repeated chargebacks'), { code: '42501' });
+        await assert.rejects(suspend(operator.user_id, learner.user_id, 'too short'), { code: '22023' });
+        await assert.rejects(suspend(operator.user_id, operator.user_id, 'Repeated chargebacks'), { code: '22023' });
+        await assert.rejects(suspend(operator.user_id, readOnlyOp.user_id, 'Repeated chargebacks'), { code: '22023' });
+    });
+
+    await t.test('suspension blocks access, keeps the account, notifies the user and is audited', async () => {
+        await suspend(operator.user_id, learner.user_id, 'Repeated chargebacks');
+        await assert.rejects(suspend(operator.user_id, learner.user_id, 'Repeated chargebacks'), { code: '23505' });
+
+        const access = await callFn<{ exists: boolean; isSuspended: boolean }>('identity_app.fn_user_access_check', learner.user_id);
+        assert.deepEqual([access.exists, access.isSuspended], [true, true]);
+        const lookup = await callFn<{ isSuspended: boolean }>('identity_app.fn_user_auth_lookup', `learner.${suffix}@example.com`, null);
+        assert.equal(lookup.isSuspended, true);
+
+        const suspended = await callFn<UserList>('platform.fn_users_list', suffix, 'suspended', 10, 0);
+        assert.deepEqual(suspended.users.map(u => [u.userId, u.accountStatus]), [[learner.user_id, 'suspended']]);
+
+        const outbox = await query<{ event_type: string }>(
+            `SELECT event_type FROM integration.outbox_messages WHERE payload->>'userId' = $1`, [learner.user_id]);
+        assert.deepEqual(outbox.map(o => o.event_type), ['notification.user.account_suspended']);
+        const audit = await query<{ action: string }>(
+            `SELECT action FROM audit.compliance_logs WHERE entity_type = 'user' AND entity_id = $1`, [learner.user_id]);
+        assert.deepEqual(audit.map(a => a.action), ['user.suspended']);
+    });
+
+    await t.test('reactivation restores access and both changes appear in the user details', async () => {
+        await callFn('platform.fn_user_status_update', learner.user_id, false, null, operator.user_id);
+        const access = await callFn<{ isSuspended: boolean }>('identity_app.fn_user_access_check', learner.user_id);
+        assert.equal(access.isSuspended, false);
+
+        const detail = await callFn<{ suspensionHistory: Array<{ action: string; actorName: string }> }>('platform.fn_user_detail', learner.user_id);
+        assert.deepEqual(detail.suspensionHistory.map(h => [h.action, h.actorName]),
+            [['reactivated', 'Ops Operator'], ['suspended', 'Ops Operator']]);
+    });
+});

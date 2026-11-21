@@ -8,7 +8,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4-10.5, 14; PLT-003, PLT-006, DECISION-008
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'billing.read');
+    const context = await authorize(req, 'billing.read');
     if (context instanceof Response) return context;
     try {
         const [ledger, aging] = await Promise.all([
@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'billing.write');
+    const context = await authorize(req, 'billing.write');
     if (context instanceof Response) return context;
     if (!context.idempotencyKey) {
         return problem(context, req, 400, 'Idempotency Key Required',

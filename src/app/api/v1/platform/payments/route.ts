@@ -7,7 +7,7 @@ import { ok, fail } from '@/lib/api/respond';
  * Platform Payments & Transactions API
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     const { searchParams } = req.nextUrl;

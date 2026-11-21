@@ -8,7 +8,7 @@ import { ok, fail } from '@/lib/api/respond';
  * Traceability: TDD Section 15; PLT-011, DECISION-006
  */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     try {

@@ -8,7 +8,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4, 15
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('engagement.fn_notice_list', context.tenantId, context.branchId));
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'notices.write');
+    const context = await authorize(req, 'notices.write');
     if (context instanceof Response) return context;
 
     try {

@@ -1,20 +1,29 @@
 import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
-import { authorize } from '@/lib/api/context';
+import { authorize, invalidateUserAccess } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
 
 /**
  * Platform Users Management API
+ * GET   ?q=&status=all|active|suspended&limit=&offset=  → paged users with tab counts
+ * PATCH { userId, isSuspended, reason }                  → suspend (reason required) or reactivate
+ * Suspension only changes account status; user records and relationships are never deleted.
  */
+const STATUSES = ['all', 'active', 'suspended'];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     const { searchParams } = req.nextUrl;
-    const query = searchParams.get('q') || null;
-    const status = searchParams.get('status') || null;
-    const limit = Math.min(parseInt(searchParams.get('limit') || '10', 10), 100);
-    const offset = Math.max(parseInt(searchParams.get('offset') || '0', 10), 0);
+    const query = searchParams.get('q')?.trim().slice(0, 100) || null;
+    const status = searchParams.get('status') || 'all';
+    if (!STATUSES.includes(status)) {
+        return problem(context, req, 400, 'Validation Error', 'status must be one of: all, active, suspended.');
+    }
+    const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '10', 10) || 10, 1), 100);
+    const offset = Math.max(parseInt(searchParams.get('offset') || '0', 10) || 0, 0);
 
     try {
         const result = await callFn('platform.fn_users_list', query, status, limit, offset);
@@ -25,25 +34,30 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     try {
         const body = await req.json();
-        const { userId, isSuspended, reason } = body;
+        const { userId, isSuspended } = body ?? {};
+        const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
 
-        if (!userId) {
-            return problem(context, req, 400, 'Validation Error', 'userId is required.');
+        if (typeof userId !== 'string' || !UUID.test(userId)) {
+            return problem(context, req, 400, 'Validation Error', 'A valid userId is required.');
+        }
+        if (typeof isSuspended !== 'boolean') {
+            return problem(context, req, 400, 'Validation Error', 'isSuspended must be true (suspend) or false (reactivate).');
+        }
+        if (isSuspended && reason.length < 10) {
+            return problem(context, req, 400, 'Validation Error', 'A suspension reason of at least 10 characters is required.');
+        }
+        if (reason.length > 500) {
+            return problem(context, req, 400, 'Validation Error', 'The reason cannot exceed 500 characters.');
         }
 
-        const result = await callFn(
-            'platform.fn_user_status_update',
-            userId,
-            Boolean(isSuspended),
-            reason || null,
-            context.actorId || null
-        );
-
+        // Permission, self-suspension and state checks run inside the stored function
+        const result = await callFn('platform.fn_user_status_update', userId, isSuspended, reason || null, context.actorId);
+        invalidateUserAccess(userId);
         return ok(context, result);
     } catch (err) {
         return fail(err, context, req);

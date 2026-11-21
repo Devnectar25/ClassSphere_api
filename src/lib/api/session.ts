@@ -7,6 +7,9 @@ export interface Membership {
     academyType: string;
     role: UserRole;
     branchId: string | null;
+    orgStatus?: string;
+    verificationStatus?: string;
+    rejectionReason?: string | null;
 }
 
 export interface AuthUser {
@@ -16,6 +19,7 @@ export interface AuthUser {
     passwordHash: string;
     isActive: boolean;
     isPlatformAdmin: boolean;
+    isSuspended: boolean;
     memberships: Membership[];
 }
 

@@ -7,7 +7,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Achievements & Student Honors API — branch-scoped
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('engagement.fn_achievement_list', context.tenantId, context.branchId));
@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'students.write');
+    const context = await authorize(req, 'students.write');
     if (context instanceof Response) return context;
 
     try {

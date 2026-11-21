@@ -7,6 +7,7 @@
 -- Unlike operator provisioning, an email or mobile number that already has a sign-in is refused (the owner must
 -- sign in instead), so a public caller can never attach an existing account to a new academy.
 -- The email is optional: without one, the owner signs in with their (verified) mobile number.
+DROP FUNCTION IF EXISTS tenant.fn_tenant_register(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR);
 CREATE OR REPLACE FUNCTION tenant.fn_tenant_register(
     p_name VARCHAR(200),
     p_academy_type VARCHAR(50),
@@ -14,7 +15,12 @@ CREATE OR REPLACE FUNCTION tenant.fn_tenant_register(
     p_admin_name VARCHAR(150),
     p_admin_email VARCHAR(255),
     p_admin_phone VARCHAR(50),
-    p_admin_password_hash VARCHAR(255)
+    p_admin_password_hash VARCHAR(255),
+    p_country VARCHAR(100) DEFAULT 'India',
+    p_state VARCHAR(100) DEFAULT NULL,
+    p_city VARCHAR(100) DEFAULT NULL,
+    p_address TEXT DEFAULT NULL,
+    p_location VARCHAR(150) DEFAULT NULL
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -26,6 +32,7 @@ DECLARE
     v_base TEXT;
     v_slug TEXT;
     v_admin_id UUID;
+    v_tenant_id UUID;
     v_result JSONB;
 BEGIN
     IF v_email IS NOT NULL AND EXISTS (SELECT 1 FROM identity_app.users WHERE lower(email) = v_email) THEN
@@ -64,10 +71,30 @@ BEGIN
         v_result := v_result || jsonb_build_object('adminUserId', v_admin_id);
     END IF;
 
+    v_tenant_id := (v_result->>'tenantId')::UUID;
+
+    -- Set default address, city, state, country, location/pincode on the primary Main Campus branch
+    UPDATE tenant.branches
+    SET address = COALESCE(NULLIF(trim(p_address), ''), 'Main Campus'),
+        city = NULLIF(trim(p_city), ''),
+        state = NULLIF(trim(p_state), ''),
+        country = COALESCE(NULLIF(trim(p_country), ''), 'India'),
+        location = NULLIF(trim(p_location), ''),
+        pincode = NULLIF(trim(p_location), ''),
+        phone = COALESCE(v_phone, phone),
+        email = COALESCE(v_email, email)
+    WHERE tenant_id = v_tenant_id AND is_primary = true;
+
     UPDATE tenant.organizations
-    SET settings = settings || jsonb_build_object('contact', jsonb_build_object(
-            'name', trim(p_admin_name), 'email', v_email, 'phone', v_phone))
-    WHERE tenant_id = (v_result->>'tenantId')::UUID;
+    SET settings = settings || jsonb_build_object(
+            'country', COALESCE(NULLIF(trim(p_country), ''), 'India'),
+            'state', NULLIF(trim(p_state), ''),
+            'city', NULLIF(trim(p_city), ''),
+            'address', NULLIF(trim(p_address), ''),
+            'location', NULLIF(trim(p_location), ''),
+            'contact', jsonb_build_object('name', trim(p_admin_name), 'email', v_email, 'phone', v_phone)
+        )
+    WHERE tenant_id = v_tenant_id;
 
     RETURN v_result;
 END;

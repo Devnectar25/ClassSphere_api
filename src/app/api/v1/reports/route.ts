@@ -12,8 +12,8 @@ export async function GET(req: NextRequest) {
     const reportType = searchParams.get('type') || 'aging';
     const permission = reportType === 'platform' ? 'platform' : reportType === 'audit' ? 'audit.read' : 'reports.read';
     // Platform operators may search the audit trail across academies without opening one
-    const platformAudit = reportType === 'audit' && authorize(req, 'platform');
-    const context = platformAudit && !(platformAudit instanceof Response) ? platformAudit : authorize(req, permission);
+    const platformAudit = reportType === 'audit' && await authorize(req, 'platform');
+    const context = platformAudit && !(platformAudit instanceof Response) ? platformAudit : await authorize(req, permission);
     if (context instanceof Response) return context;
 
     try {

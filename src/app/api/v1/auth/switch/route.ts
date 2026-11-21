@@ -15,6 +15,9 @@ export async function POST(req: NextRequest) {
     try {
         const { tenantId } = await req.json();
         const user = await findUser(null, context.actorId);
+        if (user?.isSuspended) {
+            return problem(context, req, 403, 'Account Suspended', 'Your account has been suspended. Please contact ClassSphere support.');
+        }
         const session = user?.isActive ? await issueSession(user, tenantId ?? null) : null;
         if (!session) return problem(context, req, 403, 'Forbidden', 'You do not have access to that academy.');
         return ok(context, session);

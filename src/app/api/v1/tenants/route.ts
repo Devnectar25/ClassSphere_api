@@ -11,7 +11,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
 const MAX_LOGO_BYTES = 512 * 1024;
 
 export async function GET(req: NextRequest) {
-    const context = authorize(req, null);
+    const context = await authorize(req, null);
     if (context instanceof Response) return context;
     try {
         const workspace = await callFn('tenant.fn_tenant_get', context.tenantId, context.actorId);
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'settings.write');
+    const context = await authorize(req, 'settings.write');
     if (context instanceof Response) return context;
 
     try {
@@ -44,7 +44,7 @@ export async function PUT(req: NextRequest) {
 
 /** Provisions a new academy and its administrator sign-in (platform administrators only). */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     try {

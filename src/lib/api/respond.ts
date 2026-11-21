@@ -26,7 +26,7 @@ const CLIENT_ERRORS: Record<string, [number, string]> = {
     '23514': [400, 'Validation Error'], // check violation
     '23503': [400, 'Validation Error'], // foreign key violation
     '23505': [409, 'Conflict'], // unique violation
-    P0001: [400, 'Bad Request'], // default raise_exception in PL/pgSQL
+    '42501': [403, 'Forbidden'], // insufficient privilege (operator role does not allow the action)
     P0002: [404, 'Not Found'], // no data found
     '42725': [500, 'Database Ambiguity'], // ambiguous function overload
 };

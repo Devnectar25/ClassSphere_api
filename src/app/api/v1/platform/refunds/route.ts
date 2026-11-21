@@ -7,7 +7,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Platform Refunds Management API
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     const { searchParams } = req.nextUrl;
@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'platform');
+    const context = await authorize(req, 'platform');
     if (context instanceof Response) return context;
 
     try {

@@ -97,7 +97,7 @@ BEGIN
 
     v_payload := v_reg.registration_payload;
 
-    -- Provision the academy workspace & TenantAdmin owner account
+    -- Provision the academy workspace & TenantAdmin owner account with default address
     v_result := tenant.fn_tenant_register(
         v_payload->>'academyName',
         v_payload->>'academyType',
@@ -105,7 +105,12 @@ BEGIN
         (v_payload->>'firstName') || ' ' || (v_payload->>'lastName'),
         v_payload->>'email',
         v_payload->>'phone',
-        v_payload->>'passwordHash'
+        v_payload->>'passwordHash',
+        COALESCE(v_payload->>'country', 'India'),
+        v_payload->>'state',
+        v_payload->>'city',
+        v_payload->>'address',
+        v_payload->>'location'
     );
 
     v_tenant_id := (v_result->>'tenantId')::UUID;
