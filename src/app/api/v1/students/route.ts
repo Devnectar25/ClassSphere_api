@@ -267,6 +267,37 @@ export async function PUT(req: NextRequest) {
                         `UPDATE billing.invoices SET total_amount = $1, subtotal_amount = $1, paid_amount = $1, balance_amount = 0, status = 'paid', updated_at = clock_timestamp() WHERE invoice_id = $2`,
                         [amount, inv.invoice_id]
                     );
+                    const existingPayments = await query<{ payment_id: string }>(
+                        `SELECT payment_id FROM billing.payments WHERE invoice_id = $1 AND tenant_id = $2`,
+                        [inv.invoice_id, context.tenantId]
+                    );
+                    if (existingPayments.length === 0) {
+                        const now = new Date();
+                        const yyyymm = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+                        const countRows = await query<{ count: string }>(
+                            `SELECT COUNT(*) as count FROM billing.payments WHERE tenant_id = $1 AND receipt_number LIKE $2`,
+                            [context.tenantId, `RCP-${yyyymm}-%`]
+                        );
+                        const seq = parseInt(countRows[0]?.count || '0', 10) + 1;
+                        const rcpNo = `RCP-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                        await query(
+                            `INSERT INTO billing.payments (
+                                tenant_id, invoice_id, student_id, payment_reference, amount,
+                                payment_method, status, receipt_number, recorded_by_actor_id
+                            ) VALUES (
+                                $1, $2, $3, $4, $5, 'Cash', 'posted', $6, $7
+                            )`,
+                            [
+                                context.tenantId,
+                                inv.invoice_id,
+                                studentId,
+                                `STU-UPD-${studentId.slice(0, 8)}`,
+                                amount,
+                                rcpNo,
+                                context.actorId
+                            ]
+                        );
+                    }
                 } else if (feeStatus === 'pending') {
                     await query(
                         `UPDATE billing.invoices SET total_amount = $1, subtotal_amount = $1, paid_amount = 0, balance_amount = $1, status = 'pending', updated_at = clock_timestamp() WHERE invoice_id = $2`,

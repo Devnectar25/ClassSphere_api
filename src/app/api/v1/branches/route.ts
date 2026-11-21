@@ -26,3 +26,33 @@ export async function POST(req: NextRequest) {
         return fail(err, context, req);
     }
 }
+
+/**
+ * Branch update
+ */
+export async function PUT(req: NextRequest) {
+    const context = authorize(req, 'branches.write');
+    if (context instanceof Response) return context;
+    try {
+        const { branchId, name, code, address, phone, headUserId, isPrimary, isActive } = await req.json();
+        if (!branchId || !name?.trim() || !code?.trim()) {
+            return problem(context, req, 400, 'Validation Error', 'Branch ID, name and code are required.');
+        }
+
+        const result = await callFn('tenant.fn_branch_update',
+            context.tenantId,
+            branchId,
+            name.trim(),
+            String(code).trim().toUpperCase(),
+            address || null,
+            phone || null,
+            headUserId || null,
+            isPrimary !== undefined ? Boolean(isPrimary) : null,
+            isActive !== undefined ? Boolean(isActive) : true,
+            context.actorId
+        );
+        return ok(context, result);
+    } catch (err) {
+        return fail(err, context, req);
+    }
+}

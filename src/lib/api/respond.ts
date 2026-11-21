@@ -28,6 +28,7 @@ const CLIENT_ERRORS: Record<string, [number, string]> = {
     '23505': [409, 'Conflict'], // unique violation
     '42501': [403, 'Forbidden'], // insufficient privilege (operator role does not allow the action)
     P0002: [404, 'Not Found'], // no data found
+    '42725': [500, 'Database Ambiguity'], // ambiguous function overload
 };
 
 /** Maps malformed payloads and stored-function errors to RFC 7807 problem details. */
@@ -41,5 +42,6 @@ export function fail(err: unknown, context: Correlated, req: NextRequest) {
         return problem(context, req, mapped[0], mapped[1], (err as Error).message);
     }
     console.error(`[${context.correlationId}]`, err);
-    return problem(context, req, 500, 'Internal Server Error', 'An unexpected error occurred.');
+    const detail = (err as Error)?.message || 'An unexpected error occurred.';
+    return problem(context, req, 500, 'Internal Server Error', detail);
 }
