@@ -21,6 +21,7 @@ AS $$
     SELECT (p_query IS NULL OR btrim(p_query) = ''
             OR p_org.name ILIKE '%' || btrim(p_query) || '%'
             OR p_org.slug ILIKE '%' || btrim(p_query) || '%'
+            OR COALESCE(p_org.academy_code, '') ILIKE '%' || btrim(p_query) || '%'
             OR p_org.tenant_id::text ILIKE btrim(p_query) || '%'
             OR p_org.academy_type ILIKE '%' || btrim(p_query) || '%'
             OR (p_owner_name IS NOT NULL AND p_owner_name ILIKE '%' || btrim(p_query) || '%')
@@ -98,6 +99,7 @@ BEGIN
     FROM (
         SELECT
             o.tenant_id,
+            COALESCE(o.academy_code, 'AC-' || o.tenant_id::text) AS academy_code,
             o.name,
             o.slug,
             o.academy_type AS category,
@@ -191,7 +193,7 @@ BEGIN
     END IF;
 
     -- Owner record
-    SELECT u.user_id, u.full_name, u.email, u.phone,
+    SELECT u.user_id, COALESCE(u.user_code, 'USR-' || u.user_id::text) AS user_code, u.full_name, u.email, u.phone,
            (u.email_verified_at IS NOT NULL) AS email_verified,
            (u.phone_verified_at IS NOT NULL) AS phone_verified,
            CASE WHEN u.is_suspended THEN 'suspended' WHEN u.is_active THEN 'active' ELSE 'inactive' END AS account_status,
@@ -217,6 +219,7 @@ BEGIN
     -- Tab 1: Overview
     v_overview := jsonb_build_object(
         'tenantId', v_org.tenant_id,
+        'academyCode', COALESCE(v_org.academy_code, 'AC-' || v_org.tenant_id::text),
         'name', v_org.name,
         'slug', v_org.slug,
         'category', v_org.academy_type,
@@ -247,6 +250,7 @@ BEGIN
     -- Tab 2: Owner Information
     v_owner_info := jsonb_build_object(
         'userId', v_owner.user_id,
+        'userCode', v_owner.user_code,
         'fullName', COALESCE(v_owner.full_name, 'Academy Administrator'),
         'email', v_owner.email,
         'phone', v_owner.phone,
@@ -603,6 +607,7 @@ BEGIN
     FROM (
         SELECT
             o.tenant_id,
+            COALESCE(o.academy_code, 'AC-' || o.tenant_id::text) AS academy_code,
             o.name,
             o.slug,
             o.academy_type AS category,

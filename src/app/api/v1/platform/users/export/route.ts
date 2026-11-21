@@ -21,8 +21,11 @@ export async function GET(req: NextRequest) {
         return problem(context, req, 400, 'Validation Error', 'status must be one of: all, active, suspended.');
     }
 
+    const roleParam = searchParams.get('role');
+    const role = roleParam === 'all' ? null : (roleParam || 'TenantAdmin');
+
     try {
-        const result = await callFn<{ users: unknown[] }>('platform.fn_users_export', query, status, context.actorId);
+        const result = await callFn<{ users: unknown[] }>('platform.fn_users_export', query, status, context.actorId, role);
         return ok(context, result);
     } catch (err) {
         return fail(err, context, req);

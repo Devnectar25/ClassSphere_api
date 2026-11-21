@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-    const context = authorize(req, 'attendance.write');
+    const context = await authorize(req, 'attendance.write');
     if (context instanceof Response) return context;
 
     try {

@@ -4,6 +4,7 @@
 -- ============================================================================
 
 -- 1. Create a pending registration payment order / subscription record
+DROP FUNCTION IF EXISTS platform.fn_registration_order_create(VARCHAR, VARCHAR, VARCHAR, NUMERIC, VARCHAR, JSONB);
 CREATE OR REPLACE FUNCTION platform.fn_registration_order_create(
     p_order_id VARCHAR(100),
     p_plan_tier VARCHAR(50),
@@ -52,6 +53,7 @@ END;
 $$;
 
 -- 2. Verify payment & atomically activate the academy
+DROP FUNCTION IF EXISTS platform.fn_registration_payment_verify_and_activate(VARCHAR, VARCHAR, VARCHAR, TIMESTAMPTZ);
 CREATE OR REPLACE FUNCTION platform.fn_registration_payment_verify_and_activate(
     p_order_id VARCHAR(100),
     p_payment_id VARCHAR(100),

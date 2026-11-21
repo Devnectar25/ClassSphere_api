@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
  * Create a Fee Head or Fee Plan
  */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'billing.write');
+    const context = await authorize(req, 'billing.write');
     if (context instanceof Response) return context;
     try {
         const body = await req.json();

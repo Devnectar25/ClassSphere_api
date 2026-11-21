@@ -4,6 +4,9 @@
 -- ============================================================================
 
 -- 1. DASHBOARD TELEMETRY
+DROP FUNCTION IF EXISTS platform.fn_dashboard_telemetry();
+DROP FUNCTION IF EXISTS platform.fn_dashboard_telemetry(TEXT);
+DROP FUNCTION IF EXISTS platform.fn_dashboard_telemetry(TEXT, TIMESTAMPTZ, TIMESTAMPTZ, UUID);
 CREATE OR REPLACE FUNCTION platform.fn_dashboard_telemetry(
     p_timeframe TEXT DEFAULT 'month'
 )
@@ -279,6 +282,7 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS platform.fn_course_visibility_update(UUID, BOOLEAN, BOOLEAN, UUID);
 CREATE OR REPLACE FUNCTION platform.fn_course_visibility_update(
     p_course_id UUID,
     p_is_hidden BOOLEAN,
