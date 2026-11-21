@@ -381,3 +381,115 @@ BEGIN
     RETURN jsonb_build_object('success', true, 'planId', p_plan_id);
 END;
 $$;
+
+CREATE OR REPLACE FUNCTION billing.fn_fee_head_create(
+    p_tenant_id UUID,
+    p_code VARCHAR(50),
+    p_name VARCHAR(150),
+    p_frequency VARCHAR(30),
+    p_is_active BOOLEAN,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = billing, audit, public
+AS $$
+DECLARE
+    v_fee_head_id UUID;
+BEGIN
+    IF trim(COALESCE(p_name, '')) = '' THEN
+        RAISE EXCEPTION 'Fee head name is required' USING ERRCODE = '22023';
+    END IF;
+    IF trim(COALESCE(p_code, '')) = '' THEN
+        RAISE EXCEPTION 'Fee head code is required' USING ERRCODE = '22023';
+    END IF;
+
+    INSERT INTO billing.fee_heads (tenant_id, code, name, frequency, is_active)
+    VALUES (p_tenant_id, upper(trim(p_code)), trim(p_name), COALESCE(p_frequency, 'one-time'), COALESCE(p_is_active, true))
+    RETURNING fee_head_id INTO v_fee_head_id;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'fee_head.created', 'fee_head', v_fee_head_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'code', p_code));
+
+    RETURN jsonb_build_object('success', true, 'feeHeadId', v_fee_head_id);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION billing.fn_fee_head_update(
+    p_tenant_id UUID,
+    p_fee_head_id UUID,
+    p_code VARCHAR(50),
+    p_name VARCHAR(150),
+    p_frequency VARCHAR(30),
+    p_is_active BOOLEAN,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = billing, audit, public
+AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM billing.fee_heads WHERE fee_head_id = p_fee_head_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Fee head not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    UPDATE billing.fee_heads
+    SET name = trim(p_name),
+        code = upper(trim(p_code)),
+        frequency = COALESCE(p_frequency, frequency),
+        is_active = COALESCE(p_is_active, is_active)
+    WHERE fee_head_id = p_fee_head_id AND tenant_id = p_tenant_id;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'fee_head.updated', 'fee_head', p_fee_head_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'feeHeadId', p_fee_head_id));
+
+    RETURN jsonb_build_object('success', true, 'feeHeadId', p_fee_head_id);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION billing.fn_fee_plan_create(
+    p_tenant_id UUID,
+    p_name VARCHAR(150),
+    p_course_id UUID,
+    p_discount_percent NUMERIC,
+    p_due_day INT,
+    p_is_active BOOLEAN,
+    p_items JSONB,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = billing, audit, public
+AS $$
+DECLARE
+    v_plan_id UUID;
+    v_item JSONB;
+BEGIN
+    IF trim(COALESCE(p_name, '')) = '' THEN
+        RAISE EXCEPTION 'Fee plan name is required' USING ERRCODE = '22023';
+    END IF;
+
+    INSERT INTO billing.fee_plans (
+        tenant_id, name, course_id, discount_percent, due_day_of_month, is_active
+    ) VALUES (
+        p_tenant_id, trim(p_name), p_course_id, COALESCE(p_discount_percent, 0.00), COALESCE(p_due_day, 5), COALESCE(p_is_active, true)
+    ) RETURNING plan_id INTO v_plan_id;
+
+    IF p_items IS NOT NULL AND jsonb_typeof(p_items) = 'array' THEN
+        FOR v_item IN SELECT * FROM jsonb_array_elements(p_items) LOOP
+            IF (v_item->>'amount')::NUMERIC > 0 THEN
+                INSERT INTO billing.fee_plan_items (plan_id, fee_head_id, amount)
+                VALUES (v_plan_id, (v_item->>'feeHeadId')::UUID, (v_item->>'amount')::NUMERIC);
+            END IF;
+        END LOOP;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'fee_plan.created', 'fee_plan', v_plan_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_name, 'planId', v_plan_id));
+
+    RETURN jsonb_build_object('success', true, 'planId', v_plan_id);
+END;
+$$;

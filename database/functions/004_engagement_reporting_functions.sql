@@ -268,15 +268,23 @@ AS $$
         SELECT date_trunc('month', CURRENT_DATE) - (n || ' months')::interval AS month_start
         FROM generate_series(5, 0, -1) n
     ), paid AS (
-        SELECT amount, payment_method, created_at FROM billing.payments
-        WHERE tenant_id = p_tenant_id AND status IN ('posted', 'reconciled') AND (p_branch_id IS NULL OR student_id IN (SELECT st.student_id FROM academics.students st WHERE st.branch_id = p_branch_id))
+        SELECT amount, payment_method, created_at, student_id FROM billing.payments
+        WHERE tenant_id = p_tenant_id AND status IN ('posted', 'reconciled')
+        UNION ALL
+        SELECT paid_amount AS amount, 'Cash' AS payment_method, COALESCE(updated_at, created_at) AS created_at, student_id
+        FROM billing.invoices
+        WHERE tenant_id = p_tenant_id AND status <> 'void' AND paid_amount > 0
+          AND invoice_id NOT IN (SELECT invoice_id FROM billing.payments WHERE tenant_id = p_tenant_id)
+    ), paid_filtered AS (
+        SELECT * FROM paid
+        WHERE (p_branch_id IS NULL OR student_id IN (SELECT st.student_id FROM academics.students st WHERE st.branch_id = p_branch_id))
     ), open_inv AS (
         SELECT * FROM billing.invoices WHERE tenant_id = p_tenant_id AND status <> 'void' AND balance_amount > 0 AND (p_branch_id IS NULL OR student_id IN (SELECT st.student_id FROM academics.students st WHERE st.branch_id = p_branch_id))
     )
     SELECT jsonb_build_object(
         'stats', jsonb_build_object(
-            'revenue_this_month', (SELECT COALESCE(SUM(amount), 0) FROM paid WHERE created_at >= date_trunc('month', now())),
-            'revenue_last_month', (SELECT COALESCE(SUM(amount), 0) FROM paid
+            'revenue_this_month', (SELECT COALESCE(SUM(amount), 0) FROM paid_filtered WHERE created_at >= date_trunc('month', now())),
+            'revenue_last_month', (SELECT COALESCE(SUM(amount), 0) FROM paid_filtered
                                    WHERE created_at >= date_trunc('month', now()) - INTERVAL '1 month' AND created_at < date_trunc('month', now())),
             'outstanding_amount', (SELECT COALESCE(SUM(balance_amount), 0) FROM open_inv),
             'outstanding_count', (SELECT COUNT(*) FROM open_inv),
@@ -293,13 +301,13 @@ AS $$
         'revenue_trend', (
             SELECT jsonb_agg(jsonb_build_object(
                 'month', to_char(m.month_start, 'Mon'),
-                'collected', (SELECT COALESCE(SUM(amount), 0) FROM paid WHERE date_trunc('month', created_at) = m.month_start),
+                'collected', (SELECT COALESCE(SUM(amount), 0) FROM paid_filtered WHERE date_trunc('month', created_at) = m.month_start),
                 'pending', (SELECT COALESCE(SUM(balance_amount), 0) FROM open_inv WHERE date_trunc('month', due_date) = m.month_start)
             ) ORDER BY m.month_start) FROM months m
         ),
         'payment_modes', COALESCE((
             SELECT jsonb_agg(jsonb_build_object('name', payment_method, 'value', total) ORDER BY total DESC)
-            FROM (SELECT payment_method, SUM(amount) AS total FROM paid
+            FROM (SELECT payment_method, SUM(amount) AS total FROM paid_filtered
                   WHERE created_at >= date_trunc('month', now()) GROUP BY payment_method) pm
         ), '[]'::jsonb),
         'batch_capacity', COALESCE((
@@ -342,9 +350,17 @@ AS $$
     WITH months AS (
         SELECT date_trunc('month', CURRENT_DATE) - (n || ' months')::interval AS month_start
         FROM generate_series(5, 0, -1) n
+    ), pay_raw AS (
+        SELECT amount, status, created_at, payment_method NOT IN ('Cash', 'Cheque') AS is_online, student_id
+        FROM billing.payments WHERE tenant_id = p_tenant_id
+        UNION ALL
+        SELECT paid_amount AS amount, 'posted' AS status, COALESCE(updated_at, created_at) AS created_at, false AS is_online, student_id
+        FROM billing.invoices
+        WHERE tenant_id = p_tenant_id AND status <> 'void' AND paid_amount > 0
+          AND invoice_id NOT IN (SELECT invoice_id FROM billing.payments WHERE tenant_id = p_tenant_id)
     ), pay AS (
-        SELECT amount, status, created_at, payment_method NOT IN ('Cash', 'Cheque') AS is_online
-        FROM billing.payments WHERE tenant_id = p_tenant_id AND (p_branch_id IS NULL OR student_id IN (SELECT st.student_id FROM academics.students st WHERE st.branch_id = p_branch_id))
+        SELECT * FROM pay_raw
+        WHERE (p_branch_id IS NULL OR student_id IN (SELECT st.student_id FROM academics.students st WHERE st.branch_id = p_branch_id))
     )
     SELECT jsonb_build_object(
         'monthly_collection', (
