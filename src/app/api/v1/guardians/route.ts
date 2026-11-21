@@ -9,7 +9,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'guardians.read');
+    const context = await authorize(req, 'guardians.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('academics.fn_guardian_list', context.tenantId, context.branchId));
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
  * sign-in and returns the credentials once so the academy can share them.
  */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'guardians.write');
+    const context = await authorize(req, 'guardians.write');
     if (context instanceof Response) return context;
     try {
         const { firstName, lastName, relationship, phone, email, studentIds, createLogin } = await req.json();

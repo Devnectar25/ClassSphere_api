@@ -32,9 +32,31 @@ export async function POST(req: NextRequest) {
         if (!verifyPassword(password, user.passwordHash)) {
             return fail(401, 'Invalid Credentials', 'Incorrect password. Please try again.');
         }
+        if (user.isSuspended) {
+            return fail(403, 'Account Suspended', 'Your account has been suspended. Please contact ClassSphere support.');
+        }
 
-        // Default academy: requested one, else the first staff membership, else the platform scope
-        const target = tenantId ?? (user.isPlatformAdmin ? null : user.memberships[0]?.tenantId ?? null);
+        // Check if the user has memberships that are suspended, rejected, or pending
+        const activeMemberships = user.memberships.filter(m => m.orgStatus === 'active' || !m.orgStatus);
+        const suspendedMembership = user.memberships.find(m => m.orgStatus === 'suspended' || m.verificationStatus === 'suspended');
+        const rejectedMembership = user.memberships.find(m => m.verificationStatus === 'rejected');
+        const pendingMembership = user.memberships.find(m => m.verificationStatus === 'pending');
+
+        if (!user.isPlatformAdmin && activeMemberships.length === 0) {
+            if (suspendedMembership) {
+                return fail(403, 'Account Suspended', `Your academy "${suspendedMembership.tenantName}" has been suspended. Please contact ClassSphere support.`);
+            }
+            if (rejectedMembership) {
+                return fail(403, 'Academy Rejected', `Your academy "${rejectedMembership.tenantName}" application was rejected: ${rejectedMembership.rejectionReason || 'Please contact support.'}`);
+            }
+            if (pendingMembership) {
+                return fail(403, 'Academy Pending', `Your academy "${pendingMembership.tenantName}" is currently pending verification review.`);
+            }
+            return fail(403, 'No Academy Access', 'This account is not linked to an active academy.');
+        }
+
+        // Default academy: requested one, else the first active staff membership, else the platform scope
+        const target = tenantId ?? (user.isPlatformAdmin ? null : activeMemberships[0]?.tenantId ?? null);
         const session = await issueSession(user, target);
         if (!session) return fail(403, 'No Academy Access', 'This account is not linked to an active academy.');
 

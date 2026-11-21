@@ -8,7 +8,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4; PLT-005
  */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'branches.write');
+    const context = await authorize(req, 'branches.write');
     if (context instanceof Response) return context;
     try {
         const { name, code, address, phone } = await req.json();

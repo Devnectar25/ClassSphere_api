@@ -26,6 +26,7 @@ const CLIENT_ERRORS: Record<string, [number, string]> = {
     '23514': [400, 'Validation Error'], // check violation
     '23503': [400, 'Validation Error'], // foreign key violation
     '23505': [409, 'Conflict'], // unique violation
+    '42501': [403, 'Forbidden'], // insufficient privilege (operator role does not allow the action)
     P0002: [404, 'Not Found'], // no data found
 };
 

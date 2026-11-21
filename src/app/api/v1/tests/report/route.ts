@@ -10,7 +10,7 @@ import { batchInScope } from '@/lib/api/scope';
 type Report = { test: { batchId: string } } | null;
 
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         const report = await callFn<Report>('academics.fn_test_report', context.tenantId, req.nextUrl.searchParams.get('testId'));
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 
 /** Saves marks: [{ studentId, subjectId, marks, absent, remarks }] */
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'tests.write');
+    const context = await authorize(req, 'tests.write');
     if (context instanceof Response) return context;
     try {
         const { testId, results } = await req.json();

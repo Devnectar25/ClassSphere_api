@@ -6,7 +6,7 @@ import { batchInScope } from '@/lib/api/scope';
 
 /** Publishes a test's results to the parent portal. */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'tests.write');
+    const context = await authorize(req, 'tests.write');
     if (context instanceof Response) return context;
     try {
         const { testId } = await req.json();

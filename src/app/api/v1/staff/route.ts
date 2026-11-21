@@ -9,7 +9,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4, 13
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'staff.read');
+    const context = await authorize(req, 'staff.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('tenant.fn_staff_list', context.tenantId, context.branchId));
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 
 /** Creates a role-based academy user with a sign-in. */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'staff.write');
+    const context = await authorize(req, 'staff.write');
     if (context instanceof Response) return context;
     try {
         const { fullName, email, phone, password, role, branchId, title } = await req.json();
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
 
 /** Activates or deactivates a staff member's access. */
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'staff.write');
+    const context = await authorize(req, 'staff.write');
     if (context instanceof Response) return context;
     try {
         const { membershipId, isActive } = await req.json();

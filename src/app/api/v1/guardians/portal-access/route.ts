@@ -9,7 +9,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Returns the temporary password once; only its hash is stored.
  */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'guardians.write');
+    const context = await authorize(req, 'guardians.write');
     if (context instanceof Response) return context;
     try {
         const { guardianId, password } = await req.json();

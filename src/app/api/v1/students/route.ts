@@ -8,7 +8,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4, PLT-003, PLT-006
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'students.read');
+    const context = await authorize(req, 'students.read');
     if (context instanceof Response) return context;
     const searchParams = req.nextUrl.searchParams;
     const limit = Math.min(parseInt(searchParams.get('limit') || '50', 10), 200);
@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'students.write');
+    const context = await authorize(req, 'students.write');
     if (context instanceof Response) return context;
 
     try {
@@ -189,7 +189,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'students.write');
+    const context = await authorize(req, 'students.write');
     if (context instanceof Response) return context;
 
     try {

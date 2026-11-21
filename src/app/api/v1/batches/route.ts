@@ -8,7 +8,7 @@ import { batchInScope } from '@/lib/api/scope';
  * Batches and Academic Scheduling API — branch-scoped
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('academics.fn_batch_list', context.tenantId, context.branchId));
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
 /** Creates a new batch with its weekly schedule. */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'courses.write');
+    const context = await authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
         const { name, courseId, branchId, instructorUserId, room, capacity, status, startDate, endDate, schedules } = await req.json();
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
 
 /** Updates a batch's details and (when an array is sent) replaces its weekly schedule. */
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'courses.write');
+    const context = await authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
         const body = await req.json();

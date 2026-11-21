@@ -8,7 +8,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 14, 19; PLT-012, DECISION-008
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'billing.read');
+    const context = await authorize(req, 'billing.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('billing.fn_payment_list', context.tenantId, context.branchId));
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'billing.write');
+    const context = await authorize(req, 'billing.write');
     if (context instanceof Response) return context;
 
     try {

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { can, verifyToken, type Permission, type UserRole } from '@/lib/auth';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { callFn } from '@/lib/db/db';
 
 /**
  * Tenant Context Derivation & RBAC Resolution
@@ -41,17 +42,56 @@ export function resolveRequestContext(req: NextRequest): RequestContext | null {
     };
 }
 
+interface AccessState {
+    exists: boolean;
+    isActive: boolean;
+    isSuspended: boolean;
+}
+
+// Short-lived cache so each request does not hit the database; cleared for a user when their status changes
+const ACCESS_TTL_MS = 10_000;
+const accessCache = new Map<string, { state: AccessState; at: number }>();
+
+export function invalidateUserAccess(userId: string) {
+    accessCache.delete(userId);
+}
+
+async function userAccess(userId: string): Promise<AccessState> {
+    const cached = accessCache.get(userId);
+    if (cached && Date.now() - cached.at < ACCESS_TTL_MS) return cached.state;
+    const state = await callFn<AccessState>('identity_app.fn_user_access_check', userId);
+    accessCache.set(userId, { state, at: Date.now() });
+    return state;
+}
+
+/**
+ * Rejects sessions of accounts that were suspended, deactivated or removed after the token was issued.
+ * Returns a problem response to send back, or null when the account may continue.
+ */
+export async function checkAccountAccess(req: NextRequest, context: RequestContext): Promise<Response | null> {
+    const deny = (status: number, title: string, detail: string) =>
+        createProblemDetailsResponse(status, title, detail, context.correlationId, req.nextUrl.pathname);
+    const state = await userAccess(context.actorId);
+    if (!state.exists) return deny(401, 'Unauthorized', 'This account no longer exists. Sign in again.');
+    if (state.isSuspended) return deny(403, 'Account Suspended', 'Your account has been suspended. Please contact ClassSphere support.');
+    if (!state.isActive) return deny(403, 'Account Inactive', 'This account is inactive. Please contact your administrator.');
+    return null;
+}
+
 /**
  * Resolves the signed-in context and checks access. Returns the context, or a problem response to send back.
  * `permission` null = any signed-in academy member; 'platform' = platform administrators only.
+ * Suspended or deactivated accounts are refused even while their session token is still valid.
  */
-export function authorize(req: NextRequest, permission: Permission | 'platform' | null): RequestContext | Response {
+export async function authorize(req: NextRequest, permission: Permission | 'platform' | null): Promise<RequestContext | Response> {
     const context = resolveRequestContext(req);
     const correlationId = context?.correlationId ?? crypto.randomUUID();
     const deny = (status: number, title: string, detail: string) =>
         createProblemDetailsResponse(status, title, detail, correlationId, req.nextUrl.pathname);
 
     if (!context) return deny(401, 'Unauthorized', 'Sign in to continue.');
+    const blocked = await checkAccountAccess(req, context);
+    if (blocked) return blocked;
     if (permission === 'platform') {
         return context.isPlatformAdmin ? context : deny(403, 'Forbidden', 'Platform administrator access is required.');
     }

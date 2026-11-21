@@ -54,6 +54,11 @@ export async function POST(req: NextRequest) {
         const lastName = tidy(body.lastName);
         const email = String(body.email ?? '').trim().toLowerCase();
         const phone = String(body.phone ?? '').trim();
+        const country = tidy(body.country) || 'India';
+        const state = tidy(body.state);
+        const city = tidy(body.city);
+        const address = tidy(body.address);
+        const location = tidy(body.location);
         const academyType = String(body.academyType ?? 'Tuition').trim();
         const planTier = String(body.planTier ?? 'Professional').trim();
         const password = typeof body.password === 'string' ? body.password : '';
@@ -192,6 +197,11 @@ export async function POST(req: NextRequest) {
             email,
             phone,
             passwordHash: hashPassword(password),
+            country,
+            state: state || null,
+            city: city || null,
+            address: address || null,
+            location: location || null,
             acceptTerms: true,
         };
 

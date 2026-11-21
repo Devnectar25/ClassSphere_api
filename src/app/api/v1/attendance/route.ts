@@ -9,7 +9,7 @@ import { batchInScope } from '@/lib/api/scope';
  * Traceability: TDD Section 10.4, PLT-006
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     const params = req.nextUrl.searchParams;
     const batchId = params.get('batchId');
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'attendance.write');
+    const context = await authorize(req, 'attendance.write');
     if (context instanceof Response) return context;
 
     try {

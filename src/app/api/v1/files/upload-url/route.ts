@@ -15,7 +15,7 @@ const ALLOWED_MIME_TYPES = [
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, null);
+    const context = await authorize(req, null);
     if (context instanceof Response) return context;
     try {
         const body = await req.json();

@@ -7,7 +7,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Fee Heads & Fee Plans API
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'billing.read');
+    const context = await authorize(req, 'billing.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('billing.fn_fee_structure_list', context.tenantId));
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
  * Update an existing Fee Plan
  */
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'billing.write');
+    const context = await authorize(req, 'billing.write');
     if (context instanceof Response) return context;
     try {
         const body = await req.json();

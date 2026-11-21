@@ -17,8 +17,8 @@ interface Household {
 }
 
 // Guardians, or staff allowed to preview the portal
-function authorizePortal(req: NextRequest) {
-    const context = authorize(req, null);
+async function authorizePortal(req: NextRequest) {
+    const context = await authorize(req, null);
     if (context instanceof Response || context.actorRole === 'Guardian' || context.isPlatformAdmin || can(context.actorRole, 'portal.read')) {
         return context;
     }
@@ -171,7 +171,7 @@ async function loadHousehold(context: RequestContext, guardianId: string | null)
 }
 
 export async function GET(req: NextRequest) {
-    const context = authorizePortal(req);
+    const context = await authorizePortal(req);
     if (context instanceof Response) return context;
     try {
         return ok(context, await loadHousehold(context, req.nextUrl.searchParams.get('guardianId')));
@@ -181,7 +181,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorizePortal(req);
+    const context = await authorizePortal(req);
     if (context instanceof Response) return context;
     try {
         const body = await req.json();

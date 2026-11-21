@@ -8,7 +8,7 @@ import { ok, fail, problem } from '@/lib/api/respond';
  * Traceability: TDD Section 10.4
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('academics.fn_course_list', context.tenantId));
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
 /** Creates a course with its subjects. */
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'courses.write');
+    const context = await authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
         const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, subjects } = await req.json();
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
 
 /** Updates course or adds a subject to an existing course. */
 export async function PUT(req: NextRequest) {
-    const context = authorize(req, 'courses.write');
+    const context = await authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
         const body = await req.json();

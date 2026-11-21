@@ -50,6 +50,11 @@ export async function POST(req: NextRequest) {
         const lastName = tidy(body.lastName);
         const email = String(body.email ?? '').trim().toLowerCase();
         const phone = String(body.phone ?? '').trim();
+        const country = tidy(body.country) || 'India';
+        const state = tidy(body.state);
+        const city = tidy(body.city);
+        const address = tidy(body.address);
+        const location = tidy(body.location);
         const { academyType, planTier, acceptTerms, gatewayPaymentId, gatewayOrderId, gatewaySignature } = body;
         const password = typeof body.password === 'string' ? body.password : '';
 
@@ -99,7 +104,8 @@ export async function POST(req: NextRequest) {
         }
 
         const result = await callFn<{ tenantId: string; adminUserId: string }>('tenant.fn_tenant_register',
-            academyName, academyType, planTier || null, `${firstName} ${lastName}`, email || null, phone, hashPassword(String(password)));
+            academyName, academyType, planTier || null, `${firstName} ${lastName}`, email || null, phone, hashPassword(String(password)),
+            country, state || null, city || null, address || null, location || null);
 
         // Sign the new owner straight into their academy
         const user = await findUser(null, result.adminUserId);

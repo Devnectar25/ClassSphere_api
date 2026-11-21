@@ -8,7 +8,7 @@ import { batchInScope } from '@/lib/api/scope';
  * Tests: schedule tests for a batch across course subjects — branch-scoped
  */
 export async function GET(req: NextRequest) {
-    const context = authorize(req, 'academics.read');
+    const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
         return ok(context, await callFn('academics.fn_test_list', context.tenantId, context.branchId));
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-    const context = authorize(req, 'tests.write');
+    const context = await authorize(req, 'tests.write');
     if (context instanceof Response) return context;
     try {
         const { batchId, title, testType, testDate, subjects } = await req.json();
