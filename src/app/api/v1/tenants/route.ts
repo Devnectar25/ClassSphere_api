@@ -34,8 +34,12 @@ export async function PUT(req: NextRequest) {
         if (logo && (typeof logo !== 'string' || !/^data:image\/(png|jpeg|webp|svg\+xml);base64,/.test(logo) || logo.length > MAX_LOGO_BYTES * 1.37)) {
             return problem(context, req, 400, 'Validation Error', 'Logo must be a PNG, JPG, WEBP or SVG image of at most 512 KB.');
         }
+        if (currency !== undefined && currency !== null && (typeof currency !== 'string' || !/^[A-Za-z]{3}$/.test(currency.trim()))) {
+            return problem(context, req, 400, 'Validation Error', 'Currency must be a valid 3-letter ISO currency code (e.g. INR, USD, EUR).');
+        }
+        const safeCurrency = typeof currency === 'string' ? currency.trim().toUpperCase() : null;
         const result = await callFn('tenant.fn_tenant_settings_update',
-            context.tenantId, name || null, currency || null, timezone || null, branding ?? null, settings ?? null, context.actorId);
+            context.tenantId, name || null, safeCurrency, timezone || null, branding ?? null, settings ?? null, context.actorId);
         return ok(context, result);
     } catch (err) {
         return fail(err, context, req);
@@ -59,9 +63,13 @@ export async function POST(req: NextRequest) {
         if (adminEmail && adminPassword && String(adminPassword).length < 8) {
             return problem(context, req, 400, 'Validation Error', 'The admin password must be at least 8 characters.');
         }
+        if (currency && (typeof currency !== 'string' || !/^[A-Za-z]{3}$/.test(currency.trim()))) {
+            return problem(context, req, 400, 'Validation Error', 'Currency must be a valid 3-letter ISO currency code (e.g. INR, USD, EUR).');
+        }
 
+        const safeCurrency = typeof currency === 'string' ? currency.trim().toUpperCase() : null;
         const result = await callFn('tenant.fn_tenant_create',
-            name, slug, academyType || null, currency || null, timezone || null, planTier || null,
+            name, slug, academyType || null, safeCurrency, timezone || null, planTier || null,
             adminName || null, adminEmail || null, adminPassword ? hashPassword(adminPassword) : null, context.actorId);
         return ok(context, result, 201);
     } catch (err) {

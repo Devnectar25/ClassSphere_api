@@ -525,6 +525,10 @@ BEGIN
                     'subtitle', 'Due ' || to_char(i.due_date, 'Mon DD, YYYY'),
                     'amount', i.total_amount,
                     'balance', i.balance_amount,
+                    'late_fee_amount', COALESCE(i.late_fee_amount, 0.00),
+                    'overdue_status', i.overdue_status,
+                    'days_overdue', COALESCE(i.days_overdue, 0),
+                    'due_date', i.due_date,
                     'payment_method', COALESCE(p.payment_method, 'Pending Online Checkout'),
                     'status', CASE WHEN i.balance_amount = 0 THEN 'settled'
                                    WHEN i.due_date < CURRENT_DATE THEN 'overdue' ELSE 'pending' END,

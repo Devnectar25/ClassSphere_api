@@ -181,7 +181,7 @@ SET search_path = academics, tenant, identity_app, public
 AS $$
     SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.name), '[]'::jsonb)
     FROM (
-        SELECT b.batch_id, b.name, b.room, b.capacity, b.status, b.start_date, b.end_date,
+        SELECT b.batch_id, b.branch_id, b.name, b.room, b.capacity, b.status, b.start_date, b.end_date,
                c.course_id, c.title AS course_title, c.tuition_amount AS tuition_amount, br.name AS branch_name, b.instructor_user_id, u.full_name AS instructor_name,
                (SELECT COUNT(*) FROM academics.enrollments e WHERE e.batch_id = b.batch_id AND e.status = 'enrolled') AS enrolled_count,
                COALESCE((
@@ -626,6 +626,116 @@ BEGIN
             jsonb_build_object('name', p_first_name || ' ' || p_last_name, 'students', v_linked));
 
     RETURN jsonb_build_object('success', true, 'guardianId', v_guardian_id);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION academics.fn_guardian_update(
+    p_tenant_id UUID,
+    p_guardian_id UUID,
+    p_first_name VARCHAR(100),
+    p_last_name VARCHAR(100),
+    p_relationship VARCHAR(50),
+    p_phone VARCHAR(50),
+    p_email VARCHAR(255),
+    p_is_primary BOOLEAN,
+    p_student_ids UUID[],
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = academics, identity_app, audit, public
+AS $$
+DECLARE
+    v_user_id UUID;
+BEGIN
+    SELECT user_id INTO v_user_id
+    FROM academics.guardians
+    WHERE guardian_id = p_guardian_id AND tenant_id = p_tenant_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Guardian not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF trim(COALESCE(p_first_name, '')) = '' OR trim(COALESCE(p_last_name, '')) = '' THEN
+        RAISE EXCEPTION 'First and last name are required' USING ERRCODE = '22023';
+    END IF;
+
+    IF trim(COALESCE(p_phone, '')) = '' THEN
+        RAISE EXCEPTION 'Phone number is required' USING ERRCODE = '22023';
+    END IF;
+
+    IF trim(COALESCE(p_email, '')) = '' THEN
+        RAISE EXCEPTION 'Email address is required' USING ERRCODE = '22023';
+    END IF;
+
+    -- Update guardian record
+    UPDATE academics.guardians
+    SET first_name = trim(p_first_name),
+        last_name = trim(p_last_name),
+        relationship = COALESCE(trim(p_relationship), relationship),
+        phone = trim(p_phone),
+        email = lower(trim(p_email))
+    WHERE guardian_id = p_guardian_id AND tenant_id = p_tenant_id;
+
+    -- Update linked portal user if exists
+    IF v_user_id IS NOT NULL THEN
+        UPDATE identity_app.users
+        SET full_name = trim(p_first_name) || ' ' || trim(p_last_name),
+            email = lower(trim(p_email)),
+            phone = trim(p_phone)
+        WHERE user_id = v_user_id;
+    END IF;
+
+    -- Update student links if student_ids provided
+    IF p_student_ids IS NOT NULL AND array_length(p_student_ids, 1) > 0 THEN
+        DELETE FROM academics.student_guardian_links
+        WHERE tenant_id = p_tenant_id AND guardian_id = p_guardian_id;
+
+        INSERT INTO academics.student_guardian_links (tenant_id, student_id, guardian_id, is_primary)
+        SELECT p_tenant_id, sid, p_guardian_id, COALESCE(p_is_primary, TRUE)
+        FROM unnest(p_student_ids) AS sid;
+    ELSIF p_is_primary IS NOT NULL THEN
+        UPDATE academics.student_guardian_links
+        SET is_primary = p_is_primary
+        WHERE tenant_id = p_tenant_id AND guardian_id = p_guardian_id;
+    END IF;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'guardian.updated', 'guardian', p_guardian_id::text, gen_random_uuid()::text,
+            jsonb_build_object('name', p_first_name || ' ' || p_last_name, 'guardianId', p_guardian_id));
+
+    RETURN jsonb_build_object('success', true, 'guardianId', p_guardian_id);
+END;
+$$;
+
+-- Links an existing guardian to a student
+CREATE OR REPLACE FUNCTION academics.fn_guardian_link_student(
+    p_tenant_id UUID,
+    p_guardian_id UUID,
+    p_student_id UUID,
+    p_actor_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = academics, audit, public
+AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM academics.guardians WHERE guardian_id = p_guardian_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Guardian not found' USING ERRCODE = 'P0002';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM academics.students WHERE student_id = p_student_id AND tenant_id = p_tenant_id) THEN
+        RAISE EXCEPTION 'Student not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    INSERT INTO academics.student_guardian_links (tenant_id, student_id, guardian_id, is_primary)
+    VALUES (p_tenant_id, p_student_id, p_guardian_id, TRUE)
+    ON CONFLICT (student_id, guardian_id) DO NOTHING;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_tenant_id, p_actor_id, 'guardian.student_linked', 'guardian', p_guardian_id::text, gen_random_uuid()::text,
+            jsonb_build_object('student_id', p_student_id, 'guardian_id', p_guardian_id));
+
+    RETURN jsonb_build_object('success', true);
 END;
 $$;
 
