@@ -10,9 +10,16 @@ const root = import.meta.dirname;
 
 export async function applyScripts(folders: string[]) {
     for (const folder of folders) {
-        const files = (await readdir(join(root, folder))).filter(f => f.endsWith('.sql')).sort();
+        const dir = join(root, folder);
+        let files: string[] = [];
+        try {
+            files = (await readdir(dir)).filter(f => f.endsWith('.sql')).sort();
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+            throw err;
+        }
         for (const file of files) {
-            await execScript(await readFile(join(root, folder, file), 'utf8'));
+            await execScript(await readFile(join(dir, file), 'utf8'));
             console.log(`applied ${folder}/${file}`);
         }
     }

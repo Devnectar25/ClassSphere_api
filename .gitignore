@@ -64,6 +64,8 @@ database/local-db/
 database/test-clean-db/
 database/*-db/
 database/local-dump.sql
+database/seed/
+database/tests/
 *.dump
 *.sql.dump
 *.sqlite
@@ -73,6 +75,9 @@ database/local-dump.sql
 # additional temporary, backup, dump, and scratch files
 *.temp
 *.sql.bak
+*.seed.sql
+*.test.sql
+*.test.log
 tmp/
 temp/
 scratch/

@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
         source: "/api/:path*",
         headers: [
           { key: "Access-Control-Allow-Origin", value: process.env.FRONTEND_ORIGIN || "http://localhost:3000" },
-          { key: "Access-Control-Allow-Methods", value: "GET, POST, PUT, OPTIONS" },
+          { key: "Access-Control-Allow-Methods", value: "GET, POST, PUT, PATCH, DELETE, OPTIONS" },
           {
             key: "Access-Control-Allow-Headers",
             value: "Content-Type, Authorization, Idempotency-Key, X-Correlation-Id, X-Tenant-Id, X-Branch-Id, X-Actor-Id, X-Actor-Role",

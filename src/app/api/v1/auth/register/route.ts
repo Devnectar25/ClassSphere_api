@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'node:crypto';
 import { callFn } from '@/lib/db/db';
 import { ACADEMY_TYPES, hashPassword } from '@/lib/auth';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -49,8 +50,20 @@ export async function POST(req: NextRequest) {
         const lastName = tidy(body.lastName);
         const email = String(body.email ?? '').trim().toLowerCase();
         const phone = String(body.phone ?? '').trim();
-        const { academyType, planTier, acceptTerms } = body;
+        const { academyType, planTier, acceptTerms, gatewayPaymentId, gatewayOrderId, gatewaySignature } = body;
         const password = typeof body.password === 'string' ? body.password : '';
+
+        // If Razorpay payment details are provided, verify signature
+        const rzpSecret = process.env.RAZORPAY_KEY_SECRET;
+        if (rzpSecret && gatewayOrderId && gatewayPaymentId && gatewaySignature) {
+            const expectedSig = crypto
+                .createHmac('sha256', rzpSecret)
+                .update(`${gatewayOrderId}|${gatewayPaymentId}`)
+                .digest('hex');
+            if (expectedSig !== gatewaySignature) {
+                return fail(400, 'Payment Verification Failed', 'Invalid Razorpay payment signature.');
+            }
+        }
 
         if (!academyName || !firstName || !lastName || !email || !phone || !password) {
             return fail(400, 'Validation Error', 'Please fill in all required fields (including email address).');

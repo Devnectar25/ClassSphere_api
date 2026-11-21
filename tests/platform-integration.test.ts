@@ -335,9 +335,9 @@ test('Academies, branch-wise management & role-based users', async (t) => {
 
 test('Self-service academy sign-up', async (t) => {
     const email = `owner.${suffix}@signup.example.com`;
-    const register = (ownerEmail: string) => callFn<TenantResult & { adminUserId: string; slug: string }>('tenant.fn_tenant_register',
-        'Ravi Math Academy', 'Tuition', 'Starter', 'Ravi Kumar', ownerEmail, '+91 98400 00000', hashPassword('Owner#Pass1'));
-    const academy = await register(email);
+    const register = (ownerEmail: string, ownerPhone: string = `+91 98400 ${Math.floor(10000 + Math.random() * 89999)}`) => callFn<TenantResult & { adminUserId: string; slug: string }>('tenant.fn_tenant_register',
+        'Ravi Math Academy', 'Tuition', 'Starter', 'Ravi Kumar', ownerEmail, ownerPhone, hashPassword('Owner#Pass1'));
+    const academy = await register(email, '+91 98400 00000');
     createdTenants.push(academy.tenantId);
 
     await t.test('creates the academy, main branch, subscription and an owner who can sign in as admin', async () => {
