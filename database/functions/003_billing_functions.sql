@@ -701,7 +701,7 @@ BEGIN
         SELECT tenant_id, name, timezone
         FROM tenant.organizations
         WHERE (p_tenant_id IS NULL OR tenant_id = p_tenant_id)
-          AND is_active = TRUE
+          AND status = 'active'
     LOOP
         v_timezone := COALESCE(NULLIF(trim(v_tenant.timezone), ''), 'Asia/Kolkata');
         BEGIN

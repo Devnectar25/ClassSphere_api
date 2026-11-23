@@ -11,16 +11,32 @@ export async function POST(req: NextRequest) {
     const context = await authorize(req, 'branches.write');
     if (context instanceof Response) return context;
     try {
-        const { name, code, address, phone } = await req.json();
-        if (!name || !code) return problem(context, req, 400, 'Validation Error', 'Branch name and code are required.');
+        const { name, code, address, phone, headUserId, isPrimary, isActive } = await req.json();
+        if (!name?.trim() || !code?.trim()) return problem(context, req, 400, 'Validation Error', 'Branch name and code are required.');
 
         const check = await callFn<{ allowed: boolean; maximum: number; planTier: string }>('tenant.fn_entitlement_check', context.tenantId, 'branches');
         if (!check.allowed) {
             return problem(context, req, 402, 'Subscription Entitlement Exceeded',
                 `Branch limit of ${check.maximum} reached for the ${check.planTier} plan.`);
         }
-        const result = await callFn('tenant.fn_branch_create',
-            context.tenantId, name, String(code).toUpperCase(), address || null, phone || null, context.actorId);
+        const result = await callFn<{ success: boolean; branchId: string }>('tenant.fn_branch_create',
+            context.tenantId, name.trim(), String(code).trim().toUpperCase(), address?.trim() || null, phone?.trim() || null, context.actorId);
+
+        if (result?.branchId && (headUserId || isPrimary || isActive === false)) {
+            await callFn('tenant.fn_branch_update',
+                context.tenantId,
+                result.branchId,
+                name.trim(),
+                String(code).trim().toUpperCase(),
+                address?.trim() || null,
+                phone?.trim() || null,
+                headUserId || null,
+                isPrimary !== undefined ? Boolean(isPrimary) : null,
+                isActive !== undefined ? Boolean(isActive) : true,
+                context.actorId
+            );
+        }
+
         return ok(context, result, 201);
     } catch (err) {
         return fail(err, context, req);

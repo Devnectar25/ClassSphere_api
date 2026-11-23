@@ -15,9 +15,12 @@ export async function GET(req: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '50', 10), 200);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
 
+    const branchParam = searchParams.get('branchId');
+    const effectiveBranch = (branchParam && branchParam !== 'all') ? branchParam : context.branchId;
+
     try {
         const result = await callFn<{ total: number }>('academics.fn_student_search',
-            context.tenantId, context.branchId, searchParams.get('q') || null, searchParams.get('status') || null, limit, offset);
+            context.tenantId, effectiveBranch, searchParams.get('q') || null, searchParams.get('status') || null, limit, offset);
         const res = ok(context, result) as NextResponse;
         res.headers.set('X-Total-Count', String(result.total));
         return res;

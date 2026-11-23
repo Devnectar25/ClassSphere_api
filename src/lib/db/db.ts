@@ -24,9 +24,26 @@ export function databaseDir() {
 
 // Connects lazily so build workers that load route modules never open the database
 function database(): Database {
-    global.__classSphereDb ??= process.env.DATABASE_URL
-        ? new Pool({ connectionString: process.env.DATABASE_URL })
-        : new PGlite(databaseDir());
+    if (!global.__classSphereDb) {
+        if (process.env.DATABASE_URL) {
+            const isLocal = process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1');
+            const pool = new Pool({
+                connectionString: process.env.DATABASE_URL,
+                ssl: isLocal ? false : { rejectUnauthorized: false },
+                max: 10,
+                idleTimeoutMillis: 30000,
+                connectionTimeoutMillis: 8000,
+                keepAlive: true,
+                keepAliveInitialDelayMillis: 10000,
+            });
+            pool.on('error', (err) => {
+                console.error('[Database Pool Error]', err.message);
+            });
+            global.__classSphereDb = pool;
+        } else {
+            global.__classSphereDb = new PGlite(databaseDir());
+        }
+    }
     return global.__classSphereDb;
 }
 
