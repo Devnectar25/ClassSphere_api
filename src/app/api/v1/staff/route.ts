@@ -12,7 +12,9 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'staff.read');
     if (context instanceof Response) return context;
     try {
-        return ok(context, await callFn('tenant.fn_staff_list', context.tenantId, context.branchId));
+        const branchParam = req.nextUrl.searchParams.get('branchId');
+        const effectiveBranch = (branchParam && branchParam !== 'all') ? branchParam : context.branchId;
+        return ok(context, await callFn('tenant.fn_staff_list', context.tenantId, effectiveBranch));
     } catch (err) {
         return fail(err, context, req);
     }

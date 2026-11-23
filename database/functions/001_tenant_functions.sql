@@ -606,11 +606,39 @@ CREATE OR REPLACE FUNCTION identity_app.fn_user_auth_lookup(
     p_email VARCHAR(255),
     p_user_id UUID
 ) RETURNS JSONB
-LANGUAGE sql
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = identity_app, tenant, public
 AS $$
+DECLARE
+    v_user_id UUID;
+    v_clean_phone TEXT;
+    v_result JSONB;
+BEGIN
+    IF p_user_id IS NOT NULL THEN
+        v_user_id := p_user_id;
+    ELSIF p_email IS NOT NULL AND position('@' IN p_email) > 0 THEN
+        SELECT user_id INTO v_user_id
+        FROM identity_app.users
+        WHERE lower(email) = lower(p_email)
+        ORDER BY created_at
+        LIMIT 1;
+    ELSIF p_email IS NOT NULL THEN
+        v_clean_phone := right(regexp_replace(p_email, '\D', '', 'g'), 10);
+        IF length(v_clean_phone) = 10 THEN
+            SELECT user_id INTO v_user_id
+            FROM identity_app.users
+            WHERE phone IS NOT NULL AND right(regexp_replace(phone, '\D', '', 'g'), 10) = v_clean_phone
+            ORDER BY created_at
+            LIMIT 1;
+        END IF;
+    END IF;
+
+    IF v_user_id IS NULL THEN
+        RETURN NULL;
+    END IF;
+
     SELECT jsonb_build_object(
         'user_id', u.user_id,
         'full_name', u.full_name,
@@ -631,18 +659,12 @@ AS $$
             JOIN tenant.organizations o ON o.tenant_id = m.tenant_id
             WHERE m.user_id = u.user_id AND m.is_active
         ), '[]'::jsonb)
-    )
+    ) INTO v_result
     FROM identity_app.users u
-    -- p_email is the sign-in identifier: an email, or (without '@') a mobile number matched on its last 10 digits.
-    -- An email match always wins over a mobile match.
-    WHERE (p_email IS NOT NULL AND position('@' IN p_email) > 0 AND lower(u.email) = lower(p_email))
-       OR (p_email IS NOT NULL AND position('@' IN p_email) = 0
-           AND length(regexp_replace(p_email, '\D', '', 'g')) >= 10
-           AND u.phone IS NOT NULL
-           AND right(regexp_replace(u.phone, '\D', '', 'g'), 10) = right(regexp_replace(p_email, '\D', '', 'g'), 10))
-       OR (p_email IS NULL AND u.user_id = p_user_id)
-    ORDER BY u.created_at
-    LIMIT 1;
+    WHERE u.user_id = v_user_id;
+
+    RETURN v_result;
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION identity_app.fn_user_login_record(
