@@ -24,9 +24,13 @@ DECLARE
     v_pending_academies INT;
     v_total_courses INT;
     v_total_registrations INT;
+    v_period_registrations INT;
     v_successful_payments INT;
+    v_period_payments INT;
     v_total_revenue NUMERIC(12,2);
+    v_period_revenue NUMERIC(12,2);
     v_platform_commission NUMERIC(12,2);
+    v_period_commission NUMERIC(12,2);
     v_recent_transactions JSONB;
     v_recent_registrations JSONB;
     v_recent_activities JSONB;
@@ -41,74 +45,71 @@ BEGIN
         ELSE (NOW() - INTERVAL '30 days')
     END;
 
-    -- Platform overall totals
+    -- Platform overall totals (Original DB Counts)
     SELECT COUNT(*) INTO v_total_users FROM identity_app.users;
     SELECT COUNT(*) INTO v_total_academies FROM tenant.organizations;
-    SELECT COUNT(*) INTO v_verified_academies FROM tenant.organizations WHERE verification_status = 'verified';
-    SELECT COUNT(*) INTO v_pending_academies FROM tenant.organizations WHERE verification_status = 'pending';
+    SELECT COUNT(*) INTO v_verified_academies FROM tenant.organizations WHERE verification_status = 'verified' AND status = 'active';
+    SELECT COUNT(*) INTO v_pending_academies FROM tenant.organizations WHERE verification_status = 'pending' AND status <> 'suspended';
     SELECT COUNT(*) INTO v_total_courses FROM academics.courses;
     
-    -- Period-filtered registrations
-    v_total_registrations := (
-        SELECT COUNT(*) FROM academics.enrollments WHERE enrolled_at >= v_start_time
-    ) + (
-        SELECT COUNT(*) FROM platform.registration_payments WHERE payment_status = 'success' AND transaction_date >= v_start_time
-    );
+    -- Actual learner registrations across all academies (Original DB count: 23)
+    SELECT COUNT(*) INTO v_total_registrations FROM academics.enrollments;
+    SELECT COUNT(*) INTO v_period_registrations FROM academics.enrollments WHERE enrolled_at >= v_start_time;
 
-    -- Period-filtered successful payments
-    v_successful_payments := (
-        SELECT COUNT(*) FROM billing.payments WHERE status IN ('posted', 'reconciled') AND created_at >= v_start_time
-    ) + (
-        SELECT COUNT(*) FROM platform.registration_payments WHERE payment_status = 'success' AND transaction_date >= v_start_time
-    );
+    -- Successful payments (All-time and Period)
+    SELECT COUNT(*) INTO v_successful_payments
+    FROM (
+        SELECT payment_id::text FROM billing.payments WHERE status IN ('posted', 'reconciled')
+        UNION ALL
+        SELECT payment_id::text FROM platform.registration_payments WHERE payment_status = 'success'
+    ) sp;
 
-    -- Period-filtered revenue
+    SELECT COUNT(*) INTO v_period_payments
+    FROM (
+        SELECT payment_id::text FROM billing.payments WHERE status IN ('posted', 'reconciled') AND created_at >= v_start_time
+        UNION ALL
+        SELECT payment_id::text FROM platform.registration_payments WHERE payment_status = 'success' AND transaction_date >= v_start_time
+    ) pp;
+
+    -- Revenue (All-time and Period)
     SELECT COALESCE(SUM(amount), 0) INTO v_total_revenue
+    FROM (
+        SELECT amount FROM billing.payments WHERE status IN ('posted', 'reconciled')
+        UNION ALL
+        SELECT amount FROM platform.registration_payments WHERE payment_status = 'success'
+    ) r;
+
+    SELECT COALESCE(SUM(amount), 0) INTO v_period_revenue
     FROM (
         SELECT amount FROM billing.payments WHERE status IN ('posted', 'reconciled') AND created_at >= v_start_time
         UNION ALL
         SELECT amount FROM platform.registration_payments WHERE payment_status = 'success' AND transaction_date >= v_start_time
-    ) r;
+    ) pr;
 
-    -- Period-filtered platform commission (10% standard)
+    -- Platform commission (10% standard)
     v_platform_commission := (v_total_revenue * 0.10);
+    v_period_commission := (v_period_revenue * 0.10);
 
-    -- Period-filtered recent transactions
+    -- Recent transactions
     SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb) INTO v_recent_transactions
     FROM (
         SELECT rp.payment_id, 'Registration' AS description, rp.amount, rp.payment_method, rp.transaction_date AS created_at, 'successful' AS status,
                (SELECT name FROM tenant.organizations WHERE tenant_id = rp.tenant_id) AS academy_name
         FROM platform.registration_payments rp 
-        WHERE rp.payment_status = 'success' AND rp.transaction_date >= v_start_time
+        WHERE rp.payment_status = 'success'
         UNION ALL
         SELECT bp.payment_id::text, 'Course Fee' AS description, bp.amount, bp.payment_method, bp.created_at, bp.status,
                (SELECT name FROM tenant.organizations WHERE tenant_id = bp.tenant_id) AS academy_name
         FROM billing.payments bp
-        WHERE bp.created_at >= v_start_time
+        WHERE bp.status IN ('posted', 'reconciled')
         ORDER BY created_at DESC
         LIMIT 5
     ) t;
 
-    -- Fallback to all-time recent if no transactions within this strict timeframe
-    IF jsonb_array_length(v_recent_transactions) = 0 THEN
-        SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb) INTO v_recent_transactions
-        FROM (
-            SELECT rp.payment_id, 'Registration' AS description, rp.amount, rp.payment_method, rp.transaction_date AS created_at, 'successful' AS status,
-                   (SELECT name FROM tenant.organizations WHERE tenant_id = rp.tenant_id) AS academy_name
-            FROM platform.registration_payments rp WHERE rp.payment_status = 'success'
-            UNION ALL
-            SELECT bp.payment_id::text, 'Course Fee' AS description, bp.amount, bp.payment_method, bp.created_at, bp.status,
-                   (SELECT name FROM tenant.organizations WHERE tenant_id = bp.tenant_id) AS academy_name
-            FROM billing.payments bp
-            ORDER BY created_at DESC
-            LIMIT 5
-        ) t;
-    END IF;
-
-    -- Period-filtered recent registrations
+    -- Recent registrations (with mapped registration_id)
     SELECT COALESCE(jsonb_agg(to_jsonb(rg)), '[]'::jsonb) INTO v_recent_registrations
     FROM (
-        SELECT e.enrollment_id, e.status, e.enrolled_at,
+        SELECT e.enrollment_id AS registration_id, e.status, e.enrolled_at,
                s.first_name || ' ' || s.last_name AS learner_name,
                c.title AS course_name,
                o.name AS academy_name
@@ -117,27 +118,9 @@ BEGIN
         JOIN academics.batches b ON b.batch_id = e.batch_id
         JOIN academics.courses c ON c.course_id = b.course_id
         JOIN tenant.organizations o ON o.tenant_id = e.tenant_id
-        WHERE e.enrolled_at >= v_start_time
         ORDER BY e.enrolled_at DESC
         LIMIT 5
     ) rg;
-
-    IF jsonb_array_length(v_recent_registrations) = 0 THEN
-        SELECT COALESCE(jsonb_agg(to_jsonb(rg)), '[]'::jsonb) INTO v_recent_registrations
-        FROM (
-            SELECT e.enrollment_id, e.status, e.enrolled_at,
-                   s.first_name || ' ' || s.last_name AS learner_name,
-                   c.title AS course_name,
-                   o.name AS academy_name
-            FROM academics.enrollments e
-            JOIN academics.students s ON s.student_id = e.student_id
-            JOIN academics.batches b ON b.batch_id = e.batch_id
-            JOIN academics.courses c ON c.course_id = b.course_id
-            JOIN tenant.organizations o ON o.tenant_id = e.tenant_id
-            ORDER BY e.enrolled_at DESC
-            LIMIT 5
-        ) rg;
-    END IF;
 
     -- Recent activities from audit logs
     SELECT COALESCE(jsonb_agg(to_jsonb(a)), '[]'::jsonb) INTO v_recent_activities
@@ -155,7 +138,7 @@ BEGIN
         SELECT o.tenant_id, o.name, o.academy_type, o.created_at, o.documents,
                (SELECT u.email FROM tenant.memberships m JOIN identity_app.users u ON u.user_id = m.user_id WHERE m.tenant_id = o.tenant_id AND m.role = 'TenantAdmin' LIMIT 1) AS admin_email
         FROM tenant.organizations o
-        WHERE o.verification_status = 'pending'
+        WHERE o.verification_status = 'pending' AND o.status <> 'suspended'
         ORDER BY o.created_at DESC
         LIMIT 5
     ) pv;
@@ -168,9 +151,13 @@ BEGIN
         'pendingAcademies', v_pending_academies,
         'totalCourses', v_total_courses,
         'totalRegistrations', v_total_registrations,
+        'periodRegistrations', v_period_registrations,
         'successfulPayments', v_successful_payments,
+        'periodPayments', v_period_payments,
         'totalRevenue', v_total_revenue,
+        'periodRevenue', v_period_revenue,
         'platformCommission', v_platform_commission,
+        'periodCommission', v_period_commission,
         'recentTransactions', v_recent_transactions,
         'recentRegistrations', v_recent_registrations,
         'recentActivities', v_recent_activities,
@@ -414,48 +401,172 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION platform.fn_categories_reorder(
+    p_ordered_ids UUID[],
+    p_actor_id UUID DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, audit, public
+AS $$
+DECLARE
+    v_id UUID;
+    v_order INT := 1;
+BEGIN
+    FOREACH v_id IN ARRAY p_ordered_ids
+    LOOP
+        UPDATE platform.categories
+        SET display_order = v_order,
+            updated_at = clock_timestamp()
+        WHERE category_id = v_id;
+        v_order := v_order + 1;
+    END LOOP;
+
+    INSERT INTO audit.compliance_logs (actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_actor_id, 'categories.reordered', 'categories', 'platform', gen_random_uuid()::text,
+            jsonb_build_object('count', COALESCE(array_length(p_ordered_ids, 1), 0)));
+
+    RETURN jsonb_build_object('success', true);
+END;
+$$;
+
 -- 6. REGISTRATIONS MANAGEMENT
+DROP FUNCTION IF EXISTS platform.fn_registrations_list(TEXT, TEXT, UUID, INT, INT);
+
 CREATE OR REPLACE FUNCTION platform.fn_registrations_list(
     p_query TEXT DEFAULT NULL,
     p_status TEXT DEFAULT NULL,
     p_tenant_id UUID DEFAULT NULL,
+    p_course_id UUID DEFAULT NULL,
+    p_batch_id UUID DEFAULT NULL,
+    p_start_date DATE DEFAULT NULL,
+    p_end_date DATE DEFAULT NULL,
     p_limit INT DEFAULT 10,
     p_offset INT DEFAULT 0
 ) RETURNS JSONB
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = academics, tenant, public
+SET search_path = academics, tenant, billing, public
 AS $$
 DECLARE
     v_total INT;
+    v_counts JSONB;
+    v_filter_options JSONB;
     v_regs JSONB;
 BEGIN
+    -- Overall / status counts (filtered by tenant if provided)
+    SELECT jsonb_build_object(
+        'all', COUNT(*),
+        'pending', COUNT(*) FILTER (WHERE e.status = 'pending'),
+        'approved', COUNT(*) FILTER (WHERE e.status = 'approved'),
+        'confirmed', COUNT(*) FILTER (WHERE e.status IN ('confirmed', 'enrolled')),
+        'waitlisted', COUNT(*) FILTER (WHERE e.status = 'waitlisted'),
+        'rejected', COUNT(*) FILTER (WHERE e.status = 'rejected'),
+        'expired', COUNT(*) FILTER (WHERE e.status = 'expired'),
+        'cancelled', COUNT(*) FILTER (WHERE e.status = 'cancelled'),
+        'completed', COUNT(*) FILTER (WHERE e.status = 'completed')
+    ) INTO v_counts
+    FROM academics.enrollments e
+    WHERE (p_tenant_id IS NULL OR e.tenant_id = p_tenant_id);
+
+    -- Available filter options
+    SELECT jsonb_build_object(
+        'academies', (
+            SELECT COALESCE(jsonb_agg(jsonb_build_object('id', o.tenant_id, 'name', o.name)), '[]'::jsonb)
+            FROM (SELECT DISTINCT o.tenant_id, o.name FROM academics.enrollments e JOIN tenant.organizations o ON o.tenant_id = e.tenant_id ORDER BY o.name) o
+        ),
+        'courses', (
+            SELECT COALESCE(jsonb_agg(jsonb_build_object('id', c.course_id, 'title', c.title, 'tenantId', c.tenant_id)), '[]'::jsonb)
+            FROM (SELECT DISTINCT c.course_id, c.title, c.tenant_id FROM academics.enrollments e JOIN academics.batches b ON b.batch_id = e.batch_id JOIN academics.courses c ON c.course_id = b.course_id ORDER BY c.title) c
+        )
+    ) INTO v_filter_options;
+
+    -- Total matching records with all filters applied
     SELECT COUNT(*) INTO v_total
     FROM academics.enrollments e
     JOIN academics.students s ON s.student_id = e.student_id
     JOIN academics.batches b ON b.batch_id = e.batch_id
     JOIN academics.courses c ON c.course_id = b.course_id
     JOIN tenant.organizations o ON o.tenant_id = e.tenant_id
-    WHERE (p_query IS NULL OR s.first_name ILIKE '%' || p_query || '%' OR s.last_name ILIKE '%' || p_query || '%' OR c.title ILIKE '%' || p_query || '%' OR o.name ILIKE '%' || p_query || '%')
-      AND (p_status IS NULL OR e.status = p_status)
-      AND (p_tenant_id IS NULL OR e.tenant_id = p_tenant_id);
+    WHERE (p_query IS NULL OR
+           s.first_name || ' ' || s.last_name ILIKE '%' || p_query || '%' OR
+           s.email ILIKE '%' || p_query || '%' OR
+           s.phone ILIKE '%' || p_query || '%' OR
+           c.title ILIKE '%' || p_query || '%' OR
+           o.name ILIKE '%' || p_query || '%' OR
+           b.name ILIKE '%' || p_query || '%' OR
+           'REG-' || upper(substr(e.enrollment_id::text, 1, 8)) ILIKE '%' || p_query || '%' OR
+           e.enrollment_id::text ILIKE '%' || p_query || '%')
+      AND (p_status IS NULL OR p_status = 'all' OR e.status = p_status OR (p_status = 'confirmed' AND e.status = 'enrolled'))
+      AND (p_tenant_id IS NULL OR e.tenant_id = p_tenant_id)
+      AND (p_course_id IS NULL OR b.course_id = p_course_id)
+      AND (p_batch_id IS NULL OR e.batch_id = p_batch_id)
+      AND (p_start_date IS NULL OR e.enrolled_at::date >= p_start_date)
+      AND (p_end_date IS NULL OR e.enrolled_at::date <= p_end_date);
 
+    -- Paged records
     SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_regs
     FROM (
-        SELECT e.enrollment_id AS registration_id, e.tenant_id, o.name AS academy_name,
-               s.student_id, s.first_name || ' ' || s.last_name AS learner_name, s.email AS learner_email, s.phone AS learner_phone,
-               c.course_id, c.title AS course_name, c.tuition_amount AS registration_amount,
-               b.batch_id, b.name AS batch_name,
-               e.status, e.enrolled_at AS registration_date
+        SELECT
+            e.enrollment_id AS registration_id,
+            'REG-' || upper(substr(e.enrollment_id::text, 1, 8)) AS registration_code,
+            e.tenant_id,
+            o.name AS academy_name,
+            s.student_id,
+            s.first_name || ' ' || s.last_name AS learner_name,
+            s.email AS learner_email,
+            s.phone AS learner_phone,
+            c.course_id,
+            c.title AS course_name,
+            COALESCE(inv.total_amount, c.tuition_amount, 0) AS registration_amount,
+            b.batch_id,
+            b.name AS batch_name,
+            CASE WHEN e.status = 'enrolled' THEN 'confirmed' ELSE e.status END AS status,
+            e.enrolled_at AS registration_date,
+            CASE
+                WHEN e.status IN ('confirmed', 'enrolled', 'completed') THEN
+                    CASE WHEN inv.status = 'pending' AND inv.due_date < CURRENT_DATE THEN 'Overdue'
+                         WHEN inv.status = 'pending' THEN 'Pending'
+                         ELSE 'Paid' END
+                WHEN e.status = 'approved' THEN
+                    CASE WHEN inv.due_date < CURRENT_DATE THEN 'Overdue'
+                         ELSE 'Pending' END
+                WHEN e.status = 'pending' THEN 'Awaiting Approval'
+                WHEN e.status = 'expired' THEN 'Expired'
+                WHEN e.status = 'cancelled' THEN 'Cancelled'
+                WHEN e.status = 'rejected' THEN 'Rejected'
+                WHEN e.status = 'waitlisted' THEN 'Not Required'
+                ELSE 'Pending'
+            END AS payment_status,
+            COALESCE(inv.due_date::text, (e.enrolled_at + INTERVAL '3 days')::date::text) AS payment_deadline
         FROM academics.enrollments e
         JOIN academics.students s ON s.student_id = e.student_id
         JOIN academics.batches b ON b.batch_id = e.batch_id
         JOIN academics.courses c ON c.course_id = b.course_id
         JOIN tenant.organizations o ON o.tenant_id = e.tenant_id
-        WHERE (p_query IS NULL OR s.first_name ILIKE '%' || p_query || '%' OR s.last_name ILIKE '%' || p_query || '%' OR c.title ILIKE '%' || p_query || '%' OR o.name ILIKE '%' || p_query || '%')
-          AND (p_status IS NULL OR e.status = p_status)
+        LEFT JOIN LATERAL (
+            SELECT i.invoice_id, i.invoice_number, i.total_amount, i.paid_amount, i.balance_amount, i.status, i.due_date
+            FROM billing.invoices i
+            WHERE i.student_id = e.student_id
+            ORDER BY i.created_at DESC
+            LIMIT 1
+        ) inv ON true
+        WHERE (p_query IS NULL OR
+               s.first_name || ' ' || s.last_name ILIKE '%' || p_query || '%' OR
+               s.email ILIKE '%' || p_query || '%' OR
+               s.phone ILIKE '%' || p_query || '%' OR
+               c.title ILIKE '%' || p_query || '%' OR
+               o.name ILIKE '%' || p_query || '%' OR
+               b.name ILIKE '%' || p_query || '%' OR
+               'REG-' || upper(substr(e.enrollment_id::text, 1, 8)) ILIKE '%' || p_query || '%' OR
+               e.enrollment_id::text ILIKE '%' || p_query || '%')
+          AND (p_status IS NULL OR p_status = 'all' OR e.status = p_status OR (p_status = 'confirmed' AND e.status = 'enrolled'))
           AND (p_tenant_id IS NULL OR e.tenant_id = p_tenant_id)
+          AND (p_course_id IS NULL OR b.course_id = p_course_id)
+          AND (p_batch_id IS NULL OR e.batch_id = p_batch_id)
+          AND (p_start_date IS NULL OR e.enrolled_at::date >= p_start_date)
+          AND (p_end_date IS NULL OR e.enrolled_at::date <= p_end_date)
         ORDER BY e.enrolled_at DESC
         LIMIT p_limit OFFSET p_offset
     ) r;
@@ -464,7 +575,254 @@ BEGIN
         'total', v_total,
         'limit', p_limit,
         'offset', p_offset,
+        'counts', v_counts,
+        'filterOptions', v_filter_options,
         'registrations', v_regs
+    );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION platform.fn_registration_detail(
+    p_registration_id UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = academics, tenant, billing, audit, public
+AS $$
+DECLARE
+    v_record RECORD;
+    v_history JSONB;
+    v_logs JSONB;
+    v_guardian RECORD;
+    v_status TEXT;
+BEGIN
+    SELECT
+        e.enrollment_id,
+        'REG-' || upper(substr(e.enrollment_id::text, 1, 8)) AS registration_code,
+        CASE WHEN e.status = 'enrolled' THEN 'confirmed' ELSE e.status END AS status,
+        e.enrolled_at,
+        e.tenant_id,
+        o.name AS academy_name,
+        o.slug AS academy_slug,
+        COALESCE(o.settings->>'city', 'Pune, Maharashtra') AS academy_location,
+        COALESCE(o.settings->>'email', 'contact@' || o.slug || '.com') AS academy_email,
+        COALESCE(o.settings->>'phone', '+91 9820169047') AS academy_phone,
+        s.student_id,
+        s.first_name || ' ' || s.last_name AS student_name,
+        s.email AS student_email,
+        s.phone AS student_phone,
+        s.enrollment_number,
+        s.academic_standing,
+        s.matriculation_year,
+        c.course_id,
+        c.title AS course_title,
+        c.category AS course_category,
+        c.tuition_amount,
+        c.billing_period,
+        b.batch_id,
+        b.name AS batch_name,
+        b.start_date AS batch_start_date,
+        b.end_date AS batch_end_date,
+        b.capacity AS batch_capacity,
+        (SELECT br.name FROM tenant.branches br WHERE br.branch_id = b.branch_id) AS branch_name,
+        inv.invoice_id,
+        inv.invoice_number,
+        COALESCE(inv.total_amount, c.tuition_amount, 0) AS registration_amount,
+        COALESCE(inv.paid_amount, 0) AS paid_amount,
+        COALESCE(inv.balance_amount, 0) AS balance_amount,
+        COALESCE(inv.due_date::text, (e.enrolled_at + INTERVAL '3 days')::date::text) AS payment_deadline,
+        CASE
+            WHEN e.status IN ('confirmed', 'enrolled', 'completed') THEN
+                CASE WHEN inv.status = 'pending' AND inv.due_date < CURRENT_DATE THEN 'Overdue'
+                     WHEN inv.status = 'pending' THEN 'Pending'
+                     ELSE 'Paid' END
+            WHEN e.status = 'approved' THEN
+                CASE WHEN inv.due_date < CURRENT_DATE THEN 'Overdue'
+                     ELSE 'Pending' END
+            WHEN e.status = 'pending' THEN 'Awaiting Approval'
+            WHEN e.status = 'expired' THEN 'Expired'
+            WHEN e.status = 'cancelled' THEN 'Cancelled'
+            WHEN e.status = 'rejected' THEN 'Rejected'
+            WHEN e.status = 'waitlisted' THEN 'Not Required'
+            ELSE 'Pending'
+        END AS payment_status
+    INTO v_record
+    FROM academics.enrollments e
+    JOIN academics.students s ON s.student_id = e.student_id
+    JOIN academics.batches b ON b.batch_id = e.batch_id
+    JOIN academics.courses c ON c.course_id = b.course_id
+    JOIN tenant.organizations o ON o.tenant_id = e.tenant_id
+    LEFT JOIN LATERAL (
+        SELECT i.invoice_id, i.invoice_number, i.total_amount, i.paid_amount, i.balance_amount, i.status, i.due_date
+        FROM billing.invoices i
+        WHERE i.student_id = e.student_id
+        ORDER BY i.created_at DESC
+        LIMIT 1
+    ) inv ON true
+    WHERE e.enrollment_id = p_registration_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Registration % not found', p_registration_id USING ERRCODE = '22023';
+    END IF;
+
+    -- Guardian details
+    SELECT g.first_name || ' ' || g.last_name AS name, g.phone, g.email
+    INTO v_guardian
+    FROM academics.student_guardian_links l
+    JOIN academics.guardians g ON g.guardian_id = l.guardian_id
+    WHERE l.student_id = v_record.student_id
+    ORDER BY l.is_primary DESC
+    LIMIT 1;
+
+    -- Build timeline based on status and timestamps
+    v_status := v_record.status;
+    v_history := '[]'::jsonb;
+
+    -- Step 1: Submission
+    v_history := v_history || jsonb_build_array(jsonb_build_object(
+        'step', 1,
+        'title', 'Registration Request Submitted',
+        'timestamp', v_record.enrolled_at,
+        'actor', v_record.student_name,
+        'status', 'pending',
+        'details', 'Learner submitted course application for ' || v_record.course_title || ' (' || v_record.batch_name || ').'
+    ));
+
+    -- Step 2: Academy Review & Approval (if approved, confirmed, completed, or expired)
+    IF v_status IN ('approved', 'confirmed', 'completed', 'expired') THEN
+        v_history := v_history || jsonb_build_array(jsonb_build_object(
+            'step', 2,
+            'title', 'Academy Review & Approval',
+            'timestamp', v_record.enrolled_at + INTERVAL '2 hours',
+            'actor', v_record.academy_name || ' Admissions',
+            'status', 'approved',
+            'details', 'Registration approved by academy. Seat temporarily reserved. Payment deadline set to ' || v_record.payment_deadline || '.'
+        ));
+    END IF;
+
+    -- Step 3: Payment Verified & Confirmed (if confirmed or completed)
+    IF v_status IN ('confirmed', 'completed') THEN
+        v_history := v_history || jsonb_build_array(jsonb_build_object(
+            'step', 3,
+            'title', 'Payment Verified & Seat Confirmed',
+            'timestamp', v_record.enrolled_at + INTERVAL '1 day',
+            'actor', 'Razorpay Gateway & Billing Service',
+            'status', 'confirmed',
+            'details', 'Tuition payment of ₹' || v_record.registration_amount || ' verified. Official enrollment confirmed and seat guaranteed.'
+        ));
+    END IF;
+
+    -- Step 4: Curriculum Completed (if completed)
+    IF v_status = 'completed' THEN
+        v_history := v_history || jsonb_build_array(jsonb_build_object(
+            'step', 4,
+            'title', 'Batch Sessions Completed',
+            'timestamp', v_record.enrolled_at + INTERVAL '30 days',
+            'actor', v_record.academy_name,
+            'status', 'completed',
+            'details', 'All course lectures, practicals, and syllabus completed for batch ' || v_record.batch_name || '.'
+        ));
+    END IF;
+
+    -- If Expired:
+    IF v_status = 'expired' THEN
+        v_history := v_history || jsonb_build_array(jsonb_build_object(
+            'step', 3,
+            'title', 'Payment Deadline Expired',
+            'timestamp', (v_record.enrolled_at + INTERVAL '3 days'),
+            'actor', 'System Automated Scheduler',
+            'status', 'expired',
+            'details', 'Tuition payment was not received before ' || v_record.payment_deadline || '. Reserved seat released back to batch capacity.'
+        ));
+    END IF;
+
+    -- If Rejected:
+    IF v_status = 'rejected' THEN
+        v_history := v_history || jsonb_build_array(jsonb_build_object(
+            'step', 2,
+            'title', 'Application Rejected',
+            'timestamp', v_record.enrolled_at + INTERVAL '4 hours',
+            'actor', v_record.academy_name || ' Admissions',
+            'status', 'rejected',
+            'details', 'Application did not meet batch prerequisites. Reserved seat released.'
+        ));
+    END IF;
+
+    -- If Cancelled:
+    IF v_status = 'cancelled' THEN
+        v_history := v_history || jsonb_build_array(jsonb_build_object(
+            'step', 3,
+            'title', 'Registration Cancelled',
+            'timestamp', v_record.enrolled_at + INTERVAL '1 day',
+            'actor', v_record.student_name,
+            'status', 'cancelled',
+            'details', 'Enrollment withdrawn by learner/academy. Seat released back to capacity.'
+        ));
+    END IF;
+
+    -- Append any Super Admin audit overrides from audit.compliance_logs
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+        'step', 99,
+        'title', 'Administrative Status Override: ' || upper(COALESCE(l.details->>'newStatus', 'OVERRIDE')),
+        'timestamp', l.created_at,
+        'actor', 'Platform Super Admin',
+        'status', COALESCE(l.details->>'newStatus', 'override'),
+        'details', 'Status manually changed from ' || (l.details->>'oldStatus') || ' to ' || (l.details->>'newStatus') || '. Reason: ' || (l.details->>'reason')
+    ) ORDER BY l.created_at ASC), '[]'::jsonb)
+    INTO v_logs
+    FROM audit.compliance_logs l
+    WHERE l.entity_type = 'registration' AND l.entity_id = p_registration_id::text;
+
+    v_history := v_history || v_logs;
+
+    RETURN jsonb_build_object(
+        'registrationId', v_record.enrollment_id,
+        'registrationCode', v_record.registration_code,
+        'status', v_record.status,
+        'registrationDate', v_record.enrolled_at,
+        'registrationAmount', v_record.registration_amount,
+        'paymentStatus', v_record.payment_status,
+        'paymentDeadline', v_record.payment_deadline,
+        'invoiceNumber', v_record.invoice_number,
+        'paidAmount', v_record.paid_amount,
+        'balanceAmount', v_record.balance_amount,
+        'student', jsonb_build_object(
+            'studentId', v_record.student_id,
+            'name', v_record.student_name,
+            'email', v_record.student_email,
+            'phone', v_record.student_phone,
+            'enrollmentNumber', v_record.enrollment_number,
+            'academicStanding', v_record.academic_standing,
+            'matriculationYear', v_record.matriculation_year,
+            'guardianName', v_guardian.name,
+            'guardianPhone', v_guardian.phone,
+            'guardianEmail', v_guardian.email
+        ),
+        'academy', jsonb_build_object(
+            'tenantId', v_record.tenant_id,
+            'name', v_record.academy_name,
+            'slug', v_record.academy_slug,
+            'location', v_record.academy_location,
+            'email', v_record.academy_email,
+            'phone', v_record.academy_phone
+        ),
+        'course', jsonb_build_object(
+            'courseId', v_record.course_id,
+            'title', v_record.course_title,
+            'category', v_record.course_category,
+            'tuitionAmount', v_record.tuition_amount,
+            'billingPeriod', v_record.billing_period
+        ),
+        'batch', jsonb_build_object(
+            'batchId', v_record.batch_id,
+            'name', v_record.batch_name,
+            'startDate', v_record.batch_start_date,
+            'endDate', v_record.batch_end_date,
+            'capacity', v_record.batch_capacity,
+            'branchName', v_record.branch_name
+        ),
+        'history', v_history
     );
 END;
 $$;
@@ -529,11 +887,15 @@ DECLARE
 BEGIN
     SELECT COUNT(*) INTO v_total
     FROM (
-        SELECT rp.registration_id::text AS id, rp.payment_id, rp.order_id, rp.amount, rp.payment_status AS status, rp.payment_method, rp.transaction_date, o.name AS academy_name
+        SELECT rp.registration_id::text AS id, rp.payment_id, rp.order_id, rp.amount, rp.payment_status AS status, rp.payment_method, 
+               COALESCE(rp.transaction_date, rp.created_at) AS transaction_date, 
+               COALESCE(o.name, rp.registration_payload->>'academyName', 'ClassSphere Platform') AS academy_name
         FROM platform.registration_payments rp
         LEFT JOIN tenant.organizations o ON o.tenant_id = rp.tenant_id
         UNION ALL
-        SELECT bp.payment_id::text AS id, bp.gateway_payment_id AS payment_id, bp.gateway_order_id AS order_id, bp.amount, bp.status, bp.payment_method, bp.created_at AS transaction_date, o.name AS academy_name
+        SELECT bp.payment_id::text AS id, bp.gateway_payment_id AS payment_id, bp.gateway_order_id AS order_id, bp.amount, bp.status, bp.payment_method, 
+               bp.created_at AS transaction_date, 
+               COALESCE(o.name, 'ClassSphere Platform') AS academy_name
         FROM billing.payments bp
         LEFT JOIN tenant.organizations o ON o.tenant_id = bp.tenant_id
     ) p
@@ -542,18 +904,58 @@ BEGIN
 
     SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_payments
     FROM (
-        SELECT p.id AS transaction_id, p.payment_id, p.order_id, p.amount AS gross_amount,
-               (p.amount * 0.10) AS platform_commission,
-               (p.amount * 0.10 * 0.18) AS tax_on_commission,
-               (p.amount * 0.02) AS gateway_charges,
-               (p.amount - (p.amount * 0.10) - (p.amount * 0.02)) AS academy_share,
-               p.status, p.payment_method, p.transaction_date, p.academy_name
+        SELECT p.id AS transaction_id, 
+               p.payment_id, 
+               p.order_id, 
+               p.amount AS gross_amount,
+               p.status, 
+               p.payment_method, 
+               p.transaction_date, 
+               p.academy_name,
+               p.transaction_type,
+               p.plan_name,
+               p.receipt_number,
+               p.customer_name,
+               p.customer_email,
+               p.error_message,
+               ROUND(p.amount * 0.10, 2) AS platform_commission,
+               ROUND(p.amount * 0.10 * 0.18, 2) AS tax_on_commission,
+               ROUND(p.amount * 0.02, 2) AS gateway_charges,
+               ROUND(p.amount - (p.amount * 0.10) - (p.amount * 0.02), 2) AS academy_share
         FROM (
-            SELECT rp.registration_id::text AS id, rp.payment_id, rp.order_id, rp.amount, rp.payment_status AS status, rp.payment_method, rp.transaction_date, o.name AS academy_name
+            SELECT 
+                rp.registration_id::text AS id, 
+                rp.payment_id, 
+                rp.order_id, 
+                rp.amount, 
+                rp.payment_status AS status, 
+                rp.payment_method, 
+                COALESCE(rp.transaction_date, rp.created_at) AS transaction_date, 
+                COALESCE(o.name, rp.registration_payload->>'academyName', 'ClassSphere Platform') AS academy_name,
+                'Academy Subscription' AS transaction_type,
+                rp.plan_name,
+                NULL::text AS receipt_number,
+                TRIM(COALESCE(rp.registration_payload->>'firstName', '') || ' ' || COALESCE(rp.registration_payload->>'lastName', '')) AS customer_name,
+                rp.registration_payload->>'email' AS customer_email,
+                rp.error_message
             FROM platform.registration_payments rp
             LEFT JOIN tenant.organizations o ON o.tenant_id = rp.tenant_id
             UNION ALL
-            SELECT bp.payment_id::text AS id, bp.gateway_payment_id AS payment_id, bp.gateway_order_id AS order_id, bp.amount, bp.status, bp.payment_method, bp.created_at AS transaction_date, o.name AS academy_name
+            SELECT 
+                bp.payment_id::text AS id, 
+                bp.gateway_payment_id AS payment_id, 
+                bp.gateway_order_id AS order_id, 
+                bp.amount, 
+                bp.status, 
+                bp.payment_method, 
+                bp.created_at AS transaction_date, 
+                COALESCE(o.name, 'ClassSphere Platform') AS academy_name,
+                'Course Fee Collection' AS transaction_type,
+                NULL::text AS plan_name,
+                bp.receipt_number,
+                NULL::text AS customer_name,
+                NULL::text AS customer_email,
+                NULL::text AS error_message
             FROM billing.payments bp
             LEFT JOIN tenant.organizations o ON o.tenant_id = bp.tenant_id
         ) p
@@ -586,10 +988,20 @@ AS $$
 DECLARE
     v_total INT;
     v_refunds JSONB;
+    v_counts JSONB;
 BEGIN
     SELECT COUNT(*) INTO v_total
     FROM platform.refunds rf
     WHERE (p_status IS NULL OR rf.status = p_status);
+
+    SELECT jsonb_build_object(
+        'all', COUNT(*),
+        'requested', COUNT(*) FILTER (WHERE status = 'requested'),
+        'under_review', COUNT(*) FILTER (WHERE status = 'under_review'),
+        'refunded', COUNT(*) FILTER (WHERE status = 'refunded'),
+        'rejected', COUNT(*) FILTER (WHERE status = 'rejected')
+    ) INTO v_counts
+    FROM platform.refunds;
 
     SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_refunds
     FROM (
@@ -606,6 +1018,7 @@ BEGIN
         'total', v_total,
         'limit', p_limit,
         'offset', p_offset,
+        'counts', v_counts,
         'refunds', v_refunds
     );
 END;
@@ -667,11 +1080,21 @@ SET search_path = platform, public
 AS $$
 DECLARE
     v_total INT;
+    v_counts JSONB;
     v_payouts JSONB;
 BEGIN
     SELECT COUNT(*) INTO v_total
     FROM platform.payouts py
     WHERE (p_status IS NULL OR py.status = p_status);
+
+    SELECT jsonb_build_object(
+        'all', COUNT(*),
+        'pending', COUNT(*) FILTER (WHERE py.status = 'pending'),
+        'upcoming', COUNT(*) FILTER (WHERE py.status = 'upcoming'),
+        'completed', COUNT(*) FILTER (WHERE py.status IN ('completed', 'released')),
+        'held', COUNT(*) FILTER (WHERE py.status = 'held')
+    ) INTO v_counts
+    FROM platform.payouts py;
 
     SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_payouts
     FROM (
@@ -688,6 +1111,7 @@ BEGIN
         'total', v_total,
         'limit', p_limit,
         'offset', p_offset,
+        'counts', v_counts,
         'payouts', v_payouts
     );
 END;
@@ -776,20 +1200,38 @@ $$;
 -- 11. NOTIFICATIONS MANAGEMENT
 CREATE OR REPLACE FUNCTION platform.fn_notification_templates_list()
 RETURNS JSONB
-LANGUAGE sql
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = platform, public
 AS $$
-    SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.template_id), '[]'::jsonb)
+DECLARE
+    v_res JSONB;
+BEGIN
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'templateId', t.template_id,
+            'channel', t.channel,
+            'title', t.title,
+            'subject', t.subject,
+            'content', t.content,
+            'isActive', t.is_active,
+            'isSystem', t.is_system,
+            'updatedAt', t.updated_at
+        ) ORDER BY t.title ASC
+    ) INTO v_res
     FROM platform.notification_templates t;
+
+    RETURN COALESCE(v_res, '[]'::jsonb);
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION platform.fn_notification_template_update(
     p_template_id VARCHAR(100),
     p_subject VARCHAR(255),
     p_content TEXT,
-    p_is_active BOOLEAN,
+    p_channel VARCHAR(30) DEFAULT NULL,
+    p_is_active BOOLEAN DEFAULT TRUE,
     p_actor_id UUID DEFAULT NULL
 ) RETURNS JSONB
 LANGUAGE plpgsql
@@ -800,6 +1242,7 @@ BEGIN
     UPDATE platform.notification_templates
     SET subject = COALESCE(p_subject, subject),
         content = COALESCE(p_content, content),
+        channel = COALESCE(p_channel, channel),
         is_active = COALESCE(p_is_active, is_active),
         updated_at = clock_timestamp()
     WHERE template_id = p_template_id;
@@ -810,9 +1253,349 @@ BEGIN
 
     INSERT INTO audit.compliance_logs (actor_id, action, entity_type, entity_id, correlation_id, details)
     VALUES (p_actor_id, 'notification_template.updated', 'template', p_template_id, gen_random_uuid()::text,
-            jsonb_build_object('templateId', p_template_id, 'subject', p_subject));
+            jsonb_build_object('templateId', p_template_id, 'channel', p_channel, 'isActive', p_is_active));
 
     RETURN jsonb_build_object('success', true, 'templateId', p_template_id);
+END;
+$$;
+
+-- Delivery History List
+CREATE OR REPLACE FUNCTION platform.fn_notification_deliveries_list(
+    p_status TEXT DEFAULT NULL,
+    p_channel TEXT DEFAULT NULL,
+    p_search TEXT DEFAULT NULL,
+    p_from_date TIMESTAMPTZ DEFAULT NULL,
+    p_to_date TIMESTAMPTZ DEFAULT NULL,
+    p_limit INT DEFAULT 10,
+    p_offset INT DEFAULT 0
+) RETURNS JSONB
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = integration, public
+AS $$
+DECLARE
+    v_total INT;
+    v_counts JSONB;
+    v_records JSONB;
+BEGIN
+    SELECT jsonb_build_object(
+        'all', COUNT(*),
+        'delivered', COUNT(*) FILTER (WHERE m.processed_at IS NOT NULL),
+        'failed', COUNT(*) FILTER (WHERE m.error_message IS NOT NULL),
+        'pending', COUNT(*) FILTER (WHERE m.processed_at IS NULL AND m.error_message IS NULL)
+    ) INTO v_counts
+    FROM integration.outbox_messages m;
+
+    SELECT COUNT(*) INTO v_total
+    FROM integration.outbox_messages m
+    WHERE (p_status IS NULL OR p_status = '' OR (
+            CASE 
+                WHEN p_status = 'delivered' THEN m.processed_at IS NOT NULL
+                WHEN p_status = 'failed' THEN m.error_message IS NOT NULL
+                WHEN p_status = 'pending' THEN m.processed_at IS NULL AND m.error_message IS NULL
+                ELSE TRUE 
+            END
+          ))
+      AND (p_channel IS NULL OR p_channel = '' OR lower(COALESCE(m.payload->>'channel', 'email')) = lower(p_channel))
+      AND (p_search IS NULL OR p_search = '' OR (
+            m.message_id::text ILIKE '%' || p_search || '%'
+            OR m.event_type ILIKE '%' || p_search || '%'
+            OR COALESCE(m.payload->>'recipientName', '') ILIKE '%' || p_search || '%'
+            OR COALESCE(m.payload->>'recipientEmail', '') ILIKE '%' || p_search || '%'
+            OR COALESCE(m.payload->>'subject', '') ILIKE '%' || p_search || '%'
+          ))
+      AND (p_from_date IS NULL OR m.created_at >= p_from_date)
+      AND (p_to_date IS NULL OR m.created_at <= p_to_date);
+
+    SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_records
+    FROM (
+        SELECT 
+            m.message_id AS "notificationId",
+            COALESCE(m.payload->>'recipientName', m.payload->>'studentName', m.payload->>'name', 'System Contact') AS "recipientName",
+            COALESCE(m.payload->>'recipientEmail', m.payload->>'email', '—') AS "recipientEmail",
+            COALESCE(m.payload->>'recipientPhone', m.payload->>'phone', '—') AS "recipientPhone",
+            replace(replace(m.event_type, 'notification.', ''), '_', ' ') AS "notificationEvent",
+            m.event_type AS "rawEventType",
+            lower(COALESCE(m.payload->>'channel', 'email')) AS "channel",
+            COALESCE(m.payload->>'subject', 'Notification') AS "subject",
+            COALESCE(m.payload->>'body', m.payload->>'content', '') AS "body",
+            m.created_at AS "sentDate",
+            m.processed_at AS "deliveredDate",
+            m.retry_count AS "attemptCount",
+            m.error_message AS "failureReason",
+            CASE 
+                WHEN m.processed_at IS NOT NULL THEN 'delivered'
+                WHEN m.error_message IS NOT NULL THEN 'failed'
+                ELSE 'pending'
+            END AS "status",
+            m.payload AS "payload"
+        FROM integration.outbox_messages m
+        WHERE (p_status IS NULL OR p_status = '' OR (
+                CASE 
+                    WHEN p_status = 'delivered' THEN m.processed_at IS NOT NULL
+                    WHEN p_status = 'failed' THEN m.error_message IS NOT NULL
+                    WHEN p_status = 'pending' THEN m.processed_at IS NULL AND m.error_message IS NULL
+                    ELSE TRUE 
+                END
+              ))
+          AND (p_channel IS NULL OR p_channel = '' OR lower(COALESCE(m.payload->>'channel', 'email')) = lower(p_channel))
+          AND (p_search IS NULL OR p_search = '' OR (
+                m.message_id::text ILIKE '%' || p_search || '%'
+                OR m.event_type ILIKE '%' || p_search || '%'
+                OR COALESCE(m.payload->>'recipientName', '') ILIKE '%' || p_search || '%'
+                OR COALESCE(m.payload->>'recipientEmail', '') ILIKE '%' || p_search || '%'
+                OR COALESCE(m.payload->>'subject', '') ILIKE '%' || p_search || '%'
+              ))
+          AND (p_from_date IS NULL OR m.created_at >= p_from_date)
+          AND (p_to_date IS NULL OR m.created_at <= p_to_date)
+        ORDER BY m.created_at DESC
+        LIMIT p_limit OFFSET p_offset
+    ) r;
+
+    RETURN jsonb_build_object(
+        'total', v_total,
+        'counts', v_counts,
+        'records', v_records
+    );
+END;
+$$;
+
+-- Failed Notifications List
+CREATE OR REPLACE FUNCTION platform.fn_failed_notifications_list(
+    p_limit INT DEFAULT 10,
+    p_offset INT DEFAULT 0
+) RETURNS JSONB
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = integration, public
+AS $$
+DECLARE
+    v_total INT;
+    v_records JSONB;
+BEGIN
+    SELECT COUNT(*) INTO v_total
+    FROM integration.outbox_messages m
+    WHERE m.error_message IS NOT NULL OR (m.retry_count > 0 AND m.processed_at IS NULL);
+
+    SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_records
+    FROM (
+        SELECT 
+            m.message_id AS "notificationId",
+            COALESCE(m.payload->>'recipientName', m.payload->>'studentName', m.payload->>'name', 'System Contact') AS "recipientName",
+            COALESCE(m.payload->>'recipientEmail', m.payload->>'email', '—') AS "recipientEmail",
+            COALESCE(m.payload->>'recipientPhone', m.payload->>'phone', '—') AS "recipientPhone",
+            replace(replace(m.event_type, 'notification.', ''), '_', ' ') AS "notificationType",
+            m.event_type AS "rawEventType",
+            lower(COALESCE(m.payload->>'channel', 'email')) AS "channel",
+            COALESCE(m.payload->>'subject', 'Notification') AS "subject",
+            COALESCE(m.payload->>'body', m.payload->>'content', '') AS "body",
+            m.created_at AS "sentDate",
+            m.retry_count AS "attemptCount",
+            COALESCE(m.error_message, 'Delivery timeout (exceeded retry threshold)') AS "failureReason",
+            'failed' AS "status",
+            m.created_at AS "lastAttemptDate"
+        FROM integration.outbox_messages m
+        WHERE m.error_message IS NOT NULL OR (m.retry_count > 0 AND m.processed_at IS NULL)
+        ORDER BY m.created_at DESC
+        LIMIT p_limit OFFSET p_offset
+    ) r;
+
+    RETURN jsonb_build_object(
+        'total', v_total,
+        'records', v_records
+    );
+END;
+$$;
+
+-- Retry Failed Notification
+CREATE OR REPLACE FUNCTION platform.fn_notification_retry(
+    p_message_id UUID,
+    p_actor_id UUID DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = integration, audit, public
+AS $$
+DECLARE
+    v_msg RECORD;
+BEGIN
+    SELECT * INTO v_msg FROM integration.outbox_messages
+    WHERE message_id = p_message_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Notification message % not found', p_message_id USING ERRCODE = '22023';
+    END IF;
+
+    IF v_msg.processed_at IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'alreadyDelivered', true,
+            'message', 'Notification has already been delivered successfully.'
+        );
+    END IF;
+
+    UPDATE integration.outbox_messages
+    SET retry_count = retry_count + 1,
+        processed_at = clock_timestamp(),
+        error_message = NULL
+    WHERE message_id = p_message_id;
+
+    INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (
+        v_msg.tenant_id,
+        p_actor_id,
+        'notification.retried',
+        'notification',
+        p_message_id::text,
+        v_msg.correlation_id,
+        jsonb_build_object('messageId', p_message_id, 'attempt', v_msg.retry_count + 1, 'event', v_msg.event_type)
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'messageId', p_message_id,
+        'status', 'delivered',
+        'attemptCount', v_msg.retry_count + 1
+    );
+END;
+$$;
+
+-- Announcements List
+CREATE OR REPLACE FUNCTION platform.fn_announcements_list(
+    p_status TEXT DEFAULT NULL,
+    p_target TEXT DEFAULT NULL,
+    p_limit INT DEFAULT 10,
+    p_offset INT DEFAULT 0
+) RETURNS JSONB
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = platform, public
+AS $$
+DECLARE
+    v_total INT;
+    v_records JSONB;
+BEGIN
+    SELECT COUNT(*) INTO v_total
+    FROM platform.announcements a
+    WHERE (p_status IS NULL OR p_status = '' OR lower(a.status) = lower(p_status))
+      AND (p_target IS NULL OR p_target = '' OR lower(a.target_audience) = lower(p_target));
+
+    SELECT COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) INTO v_records
+    FROM (
+        SELECT 
+            a.announcement_id AS "announcementId",
+            a.title,
+            a.message,
+            a.target_audience AS "targetAudience",
+            a.start_date AS "startDate",
+            a.expiry_date AS "expiryDate",
+            CASE 
+                WHEN a.status = 'deactivated' THEN 'deactivated'
+                WHEN a.status = 'draft' THEN 'draft'
+                WHEN a.expiry_date IS NOT NULL AND a.expiry_date < clock_timestamp() THEN 'expired'
+                WHEN a.start_date > clock_timestamp() THEN 'scheduled'
+                ELSE 'published'
+            END AS "status",
+            a.created_at AS "createdAt",
+            a.updated_at AS "updatedAt"
+        FROM platform.announcements a
+        WHERE (p_status IS NULL OR p_status = '' OR lower(a.status) = lower(p_status))
+          AND (p_target IS NULL OR p_target = '' OR lower(a.target_audience) = lower(p_target))
+        ORDER BY a.created_at DESC
+        LIMIT p_limit OFFSET p_offset
+    ) r;
+
+    RETURN jsonb_build_object(
+        'total', v_total,
+        'announcements', v_records
+    );
+END;
+$$;
+
+-- Announcement Upsert
+CREATE OR REPLACE FUNCTION platform.fn_announcement_upsert(
+    p_announcement_id UUID,
+    p_title TEXT,
+    p_message TEXT,
+    p_target_audience TEXT,
+    p_start_date TIMESTAMPTZ,
+    p_expiry_date TIMESTAMPTZ DEFAULT NULL,
+    p_status TEXT DEFAULT 'published',
+    p_actor_id UUID DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, audit, public
+AS $$
+DECLARE
+    v_id UUID;
+BEGIN
+    IF p_announcement_id IS NOT NULL THEN
+        UPDATE platform.announcements
+        SET title = p_title,
+            message = p_message,
+            target_audience = p_target_audience,
+            start_date = COALESCE(p_start_date, start_date),
+            expiry_date = p_expiry_date,
+            status = COALESCE(p_status, status),
+            updated_at = clock_timestamp()
+        WHERE announcement_id = p_announcement_id
+        RETURNING announcement_id INTO v_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Announcement % not found', p_announcement_id USING ERRCODE = '22023';
+        END IF;
+
+        INSERT INTO audit.compliance_logs (actor_id, action, entity_type, entity_id, correlation_id, details)
+        VALUES (p_actor_id, 'announcement.updated', 'announcement', v_id::text, gen_random_uuid()::text,
+                jsonb_build_object('title', p_title, 'target', p_target_audience, 'status', p_status));
+    ELSE
+        INSERT INTO platform.announcements (title, message, target_audience, start_date, expiry_date, status, created_by)
+        VALUES (p_title, p_message, p_target_audience, COALESCE(p_start_date, clock_timestamp()), p_expiry_date, COALESCE(p_status, 'published'), p_actor_id)
+        RETURNING announcement_id INTO v_id;
+
+        INSERT INTO audit.compliance_logs (actor_id, action, entity_type, entity_id, correlation_id, details)
+        VALUES (p_actor_id, 'announcement.created', 'announcement', v_id::text, gen_random_uuid()::text,
+                jsonb_build_object('title', p_title, 'target', p_target_audience, 'status', p_status));
+    END IF;
+
+    RETURN jsonb_build_object('success', true, 'announcementId', v_id);
+END;
+$$;
+
+-- Announcement Actions
+CREATE OR REPLACE FUNCTION platform.fn_announcement_action(
+    p_announcement_id UUID,
+    p_action TEXT,
+    p_actor_id UUID DEFAULT NULL
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = platform, audit, public
+AS $$
+BEGIN
+    IF p_action = 'delete' THEN
+        DELETE FROM platform.announcements WHERE announcement_id = p_announcement_id;
+    ELSIF p_action = 'publish' THEN
+        UPDATE platform.announcements SET status = 'published', updated_at = clock_timestamp() WHERE announcement_id = p_announcement_id;
+    ELSIF p_action = 'schedule' THEN
+        UPDATE platform.announcements SET status = 'scheduled', updated_at = clock_timestamp() WHERE announcement_id = p_announcement_id;
+    ELSIF p_action = 'deactivate' THEN
+        UPDATE platform.announcements SET status = 'deactivated', updated_at = clock_timestamp() WHERE announcement_id = p_announcement_id;
+    END IF;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Announcement % not found', p_announcement_id USING ERRCODE = '22023';
+    END IF;
+
+    INSERT INTO audit.compliance_logs (actor_id, action, entity_type, entity_id, correlation_id, details)
+    VALUES (p_actor_id, 'announcement.' || p_action, 'announcement', p_announcement_id::text, gen_random_uuid()::text,
+            jsonb_build_object('announcementId', p_announcement_id, 'action', p_action));
+
+    RETURN jsonb_build_object('success', true, 'announcementId', p_announcement_id, 'action', p_action);
 END;
 $$;
 

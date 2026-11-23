@@ -85,6 +85,23 @@ export async function POST(req: NextRequest) {
         }
         const pwErr = passwordProblem(password);
         if (pwErr) return problem(context, req, 400, 'Validation Error', pwErr);
+        if (location) {
+            const isIndia = !country || country.toLowerCase() === 'india';
+            if (isIndia) {
+                const cleanDigits = location.replace(/\s/g, '');
+                if (/^\d+$/.test(cleanDigits)) {
+                    if (!/^[1-9][0-9]{5}$/.test(cleanDigits)) {
+                        return problem(context, req, 400, 'Validation Error', 'PIN code must be a valid 6-digit number (e.g. 411038).');
+                    }
+                } else {
+                    const pinMatches = location.match(/\b\d+\b/g);
+                    const hasValidPin = pinMatches && pinMatches.some(p => /^[1-9][0-9]{5}$/.test(p));
+                    if (!hasValidPin) {
+                        return problem(context, req, 400, 'Validation Error', 'Please include a valid 6-digit PIN code in your location/area (e.g. 411038).');
+                    }
+                }
+            }
+        }
         if (!acceptTerms) {
             return problem(context, req, 400, 'Validation Error', 'Please accept the Terms of Service and Privacy Policy.');
         }

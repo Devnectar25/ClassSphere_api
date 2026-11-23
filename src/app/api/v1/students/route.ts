@@ -12,6 +12,39 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'students.read');
     if (context instanceof Response) return context;
     const searchParams = req.nextUrl.searchParams;
+
+    // Fast next student ID suggestion endpoint
+    if (searchParams.get('action') === 'next-id') {
+        try {
+            const rows = await query<{ max_seq: number }>(
+                `SELECT COALESCE(MAX(
+                    CASE 
+                        WHEN enrollment_number ~* '^STUD-([0-9]+)$' THEN
+                            SUBSTRING(enrollment_number FROM '^STUD-([0-9]+)$')::INT
+                        ELSE 0
+                    END
+                ), 0) + 1 AS max_seq
+                FROM academics.students
+                WHERE tenant_id = $1`,
+                [context.tenantId]
+            );
+            let nextSeq = rows[0]?.max_seq || 1;
+            let candidate = `STUD-${String(nextSeq).padStart(2, '0')}`;
+            while (true) {
+                const dupCheck = await query<{ student_id: string }>(
+                    `SELECT student_id FROM academics.students WHERE tenant_id = $1 AND enrollment_number = $2`,
+                    [context.tenantId, candidate]
+                );
+                if (dupCheck.length === 0) break;
+                nextSeq++;
+                candidate = `STUD-${String(nextSeq).padStart(2, '0')}`;
+            }
+            return ok(context, { nextId: candidate });
+        } catch (err) {
+            return fail(err, context, req);
+        }
+    }
+
     const limit = Math.min(parseInt(searchParams.get('limit') || '50', 10), 200);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
 
@@ -145,9 +178,52 @@ export async function POST(req: NextRequest) {
             }
         }
 
+        // Process & validate Student ID (enrollment_number)
+        const rawStudentCode = body.enrollmentNumber || body.studentCode || body.studentIdCode;
+        let studentCode: string | null = null;
+        if (typeof rawStudentCode === 'string' && rawStudentCode.trim()) {
+            studentCode = rawStudentCode.trim().toUpperCase();
+            if (!/^[A-Z0-9_-]{2,30}$/.test(studentCode)) {
+                return problem(context, req, 400, 'Validation Error', 'Student ID must be 2 to 30 characters containing only letters, numbers, hyphens, and underscores (e.g. STUD-01).');
+            }
+            const existingCode = await query<{ student_id: string }>(
+                `SELECT student_id FROM academics.students WHERE tenant_id = $1 AND enrollment_number = $2`,
+                [context.tenantId, studentCode]
+            );
+            if (existingCode.length > 0) {
+                return problem(context, req, 409, 'Conflict', `Student ID '${studentCode}' is already in use in your academy. Please choose a unique Student ID.`);
+            }
+        } else {
+            // Auto-generate next sequential STUD-XX
+            const rows = await query<{ max_seq: number }>(
+                `SELECT COALESCE(MAX(
+                    CASE 
+                        WHEN enrollment_number ~* '^STUD-([0-9]+)$' THEN
+                            SUBSTRING(enrollment_number FROM '^STUD-([0-9]+)$')::INT
+                        ELSE 0
+                    END
+                ), 0) + 1 AS max_seq
+                FROM academics.students
+                WHERE tenant_id = $1`,
+                [context.tenantId]
+            );
+            let nextSeq = rows[0]?.max_seq || 1;
+            let candidate = `STUD-${String(nextSeq).padStart(2, '0')}`;
+            while (true) {
+                const dupCheck = await query<{ student_id: string }>(
+                    `SELECT student_id FROM academics.students WHERE tenant_id = $1 AND enrollment_number = $2`,
+                    [context.tenantId, candidate]
+                );
+                if (dupCheck.length === 0) break;
+                nextSeq++;
+                candidate = `STUD-${String(nextSeq).padStart(2, '0')}`;
+            }
+            studentCode = candidate;
+        }
+
         // Branch-scoped users always enroll into their own branch
         const result = await callFn<{ studentId: string; enrollmentNumber: string }>('academics.fn_student_create',
-            context.tenantId, firstName, lastName, email, formattedPhone, dateOfBirth || null, null,
+            context.tenantId, firstName, lastName, email, formattedPhone, dateOfBirth || null, studentCode,
             matriculationYear || null, academicStanding || null, batchId || null,
             context.branchId ?? branchId ?? null, context.actorId);
 
@@ -288,6 +364,22 @@ export async function PUT(req: NextRequest) {
             return problem(context, req, 400, 'Validation Error', 'First name, last name, and email are required fields.');
         }
 
+        const rawStudentCode = body.enrollmentNumber || body.studentCode;
+        let updateStudentCode: string | null = null;
+        if (typeof rawStudentCode === 'string' && rawStudentCode.trim()) {
+            updateStudentCode = rawStudentCode.trim().toUpperCase();
+            if (!/^[A-Z0-9_-]{2,30}$/.test(updateStudentCode)) {
+                return problem(context, req, 400, 'Validation Error', 'Student ID must be 2 to 30 characters containing only letters, numbers, hyphens, and underscores (e.g. STUD-01).');
+            }
+            const existingCode = await query<{ student_id: string }>(
+                `SELECT student_id FROM academics.students WHERE tenant_id = $1 AND enrollment_number = $2 AND student_id <> $3`,
+                [context.tenantId, updateStudentCode, studentId]
+            );
+            if (existingCode.length > 0) {
+                return problem(context, req, 409, 'Conflict', `Student ID '${updateStudentCode}' is already in use by another student in your academy.`);
+            }
+        }
+
         // Check if student is being transferred/migrated to another branch
         const existingStudentRows = await query<{ branch_id: string }>(
             `SELECT branch_id FROM academics.students WHERE student_id = $1 AND tenant_id = $2`,
@@ -314,10 +406,11 @@ export async function PUT(req: NextRequest) {
                  phone = $4,
                  status = $5,
                  branch_id = COALESCE($6, branch_id),
+                 enrollment_number = COALESCE($7, enrollment_number),
                  updated_at = clock_timestamp()
-             WHERE student_id = $7 AND tenant_id = $8
+             WHERE student_id = $8 AND tenant_id = $9
              RETURNING student_id, enrollment_number, first_name, last_name, email, phone, status`,
-            [firstName, lastName, email, phone, status, newBranchId, studentId, context.tenantId]
+            [firstName, lastName, email, phone, status, newBranchId, updateStudentCode, studentId, context.tenantId]
         );
 
         if (updateRes.length === 0) {

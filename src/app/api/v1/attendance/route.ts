@@ -148,7 +148,8 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const { type, batchId, sessionDate, records, studentId, status, remarks } = body;
+        const { type, sessionDate, records, studentId, status, remarks } = body;
+        let batchId = body.batchId;
 
         // Staff attendance bulk mark
         if (type === 'staff') {
@@ -204,6 +205,22 @@ export async function POST(req: NextRequest) {
         let effectiveRecords = records;
         if (!effectiveRecords && studentId) {
             effectiveRecords = [{ studentId, status: status || 'present', remarks: remarks || null }];
+        }
+
+        // Auto-resolve batchId from student enrollments if not explicitly provided
+        if (!batchId && studentId) {
+            const enrolled = await query<{ batch_id: string }>(
+                `SELECT batch_id FROM academics.enrollments WHERE student_id = $1 AND tenant_id = $2 AND status = 'enrolled' LIMIT 1`,
+                [studentId, context.tenantId]
+            );
+            batchId = enrolled[0]?.batch_id;
+            if (!batchId) {
+                const anyBatch = await query<{ batch_id: string }>(
+                    `SELECT batch_id FROM academics.batches WHERE tenant_id = $1 AND status = 'active' LIMIT 1`,
+                    [context.tenantId]
+                );
+                batchId = anyBatch[0]?.batch_id;
+            }
         }
 
         if (!batchId || !sessionDate || !Array.isArray(effectiveRecords)) {
