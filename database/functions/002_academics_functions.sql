@@ -31,6 +31,7 @@ DECLARE
     v_student_id UUID;
     v_enrollment_no VARCHAR(50);
     v_branch_id UUID;
+    v_seq_num INT;
 BEGIN
     IF p_batch_id IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM academics.batches WHERE batch_id = p_batch_id AND tenant_id = p_tenant_id
@@ -44,7 +45,31 @@ BEGIN
         (SELECT branch_id FROM academics.batches WHERE batch_id = p_batch_id),
         (SELECT branch_id FROM tenant.branches WHERE tenant_id = p_tenant_id ORDER BY is_primary DESC, created_at LIMIT 1));
 
-    v_enrollment_no := COALESCE(p_enrollment_number, 'STU-' || UPPER(SUBSTRING(gen_random_uuid()::text, 1, 8)));
+    IF p_enrollment_number IS NOT NULL AND TRIM(p_enrollment_number) <> '' THEN
+        v_enrollment_no := UPPER(TRIM(p_enrollment_number));
+        IF EXISTS (SELECT 1 FROM academics.students WHERE tenant_id = p_tenant_id AND enrollment_number = v_enrollment_no) THEN
+            RAISE EXCEPTION 'Student ID "%" already exists in this academy', v_enrollment_no USING ERRCODE = '23505';
+        END IF;
+    ELSE
+        -- Auto-generate sequentially in format STUD-01, STUD-02, etc.
+        SELECT COALESCE(MAX(
+            CASE 
+                WHEN enrollment_number ~* '^STUD-([0-9]+)$' THEN
+                    SUBSTRING(enrollment_number FROM '^STUD-([0-9]+)$')::INT
+                ELSE 0
+            END
+        ), 0) + 1 INTO v_seq_num
+        FROM academics.students
+        WHERE tenant_id = p_tenant_id;
+
+        LOOP
+            v_enrollment_no := 'STUD-' || LPAD(v_seq_num::text, 2, '0');
+            EXIT WHEN NOT EXISTS (
+                SELECT 1 FROM academics.students WHERE tenant_id = p_tenant_id AND enrollment_number = v_enrollment_no
+            );
+            v_seq_num := v_seq_num + 1;
+        END LOOP;
+    END IF;
 
     INSERT INTO academics.students (
         tenant_id, branch_id, first_name, last_name, email, phone, date_of_birth, enrollment_number,
@@ -458,7 +483,13 @@ BEGIN
             'student_id', v_student.student_id,
             'name', v_student.first_name || ' ' || v_student.last_name,
             'email', v_student.email,
-            'phone', v_student.phone
+            'phone', v_student.phone,
+            'enrolled_batches', COALESCE((
+                SELECT jsonb_agg(jsonb_build_object('batch_id', b.batch_id, 'name', b.name))
+                FROM academics.enrollments e
+                JOIN academics.batches b ON b.batch_id = e.batch_id
+                WHERE e.student_id = p_student_id AND e.status = 'enrolled'
+            ), '[]'::jsonb)
         ),
         'summary', jsonb_build_object(
             'total', v_total,

@@ -18,7 +18,13 @@ export async function POST(req: NextRequest) {
         const identifier = String(body.identifier ?? body.email ?? '').trim();
         const { password, tenantId } = body;
         if (!identifier || !password) return fail(400, 'Validation Error', 'Email or mobile number and password are required.');
-        if (!identifier.includes('@') && !/^\d{10}$/.test(identifier)) {
+
+        const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+        if (identifier.includes('@')) {
+            if (!EMAIL_REGEX.test(identifier)) {
+                return fail(400, 'Validation Error', 'Please enter a valid email address.');
+            }
+        } else if (!/^\d{10}$/.test(identifier)) {
             return fail(400, 'Validation Error', 'Enter a valid 10-digit mobile number or email address.');
         }
 

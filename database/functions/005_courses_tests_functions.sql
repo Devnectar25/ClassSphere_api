@@ -41,6 +41,14 @@ AS $$
 DECLARE
     v_course_id UUID;
 BEGIN
+    IF length(trim(p_code)) < 1 OR length(trim(p_code)) > 30 THEN
+        RAISE EXCEPTION 'Course code must be between 1 and 30 characters' USING ERRCODE = '22023';
+    END IF;
+
+    IF p_level IS NOT NULL AND length(trim(p_level)) > 50 THEN
+        RAISE EXCEPTION 'Course level cannot exceed 50 characters' USING ERRCODE = '22023';
+    END IF;
+
     IF p_tuition_amount IS NULL OR p_tuition_amount < 0 THEN
         RAISE EXCEPTION 'Tuition amount must be zero or more' USING ERRCODE = '22023';
     END IF;
@@ -115,6 +123,14 @@ AS $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM academics.courses WHERE course_id = p_course_id AND tenant_id = p_tenant_id) THEN
         RAISE EXCEPTION 'Course not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF p_code IS NOT NULL AND (length(trim(p_code)) < 1 OR length(trim(p_code)) > 30) THEN
+        RAISE EXCEPTION 'Course code must be between 1 and 30 characters' USING ERRCODE = '22023';
+    END IF;
+
+    IF p_level IS NOT NULL AND length(trim(p_level)) > 50 THEN
+        RAISE EXCEPTION 'Course level cannot exceed 50 characters' USING ERRCODE = '22023';
     END IF;
 
     IF p_tuition_amount IS NULL OR p_tuition_amount < 0 THEN

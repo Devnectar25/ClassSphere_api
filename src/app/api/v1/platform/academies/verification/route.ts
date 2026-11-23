@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { callFn } from '@/lib/db/db';
+import { callFn, query } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
 
@@ -44,6 +44,16 @@ export async function PATCH(req: NextRequest) {
         }
 
         if (action === 'commission') {
+            if (context.actorId) {
+                const [adminRow] = await query<{ role: string }>(
+                    `SELECT role FROM platform.admin_users WHERE user_id = $1 LIMIT 1`,
+                    [context.actorId]
+                );
+                const role = adminRow?.role || 'SuperAdmin';
+                if (role !== 'SuperAdmin') {
+                    return problem(context, req, 403, 'Forbidden', 'Only Super Administrators can configure academy-specific commission rates.');
+                }
+            }
             const rate = Number(commissionRate);
             if (isNaN(rate) || rate < 0 || rate > 50) {
                 return problem(context, req, 400, 'Validation Error', 'Commission rate must be between 0 and 50 percent.');

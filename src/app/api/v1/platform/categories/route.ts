@@ -24,6 +24,13 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
+
+        // Support reorder via POST if orderedIds is passed
+        if (Array.isArray(body.orderedIds) && body.orderedIds.length > 0) {
+            const result = await callFn('platform.fn_categories_reorder', body.orderedIds, context.actorId || null);
+            return ok(context, result);
+        }
+
         const { categoryId, name, description, icon, displayOrder, isActive } = body;
 
         if (!name || !name.trim()) {
@@ -42,6 +49,25 @@ export async function POST(req: NextRequest) {
         );
 
         return ok(context, category);
+    } catch (err) {
+        return fail(err, context, req);
+    }
+}
+
+export async function PATCH(req: NextRequest) {
+    const context = await authorize(req, 'platform');
+    if (context instanceof Response) return context;
+
+    try {
+        const body = await req.json();
+        const { orderedIds } = body;
+
+        if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+            return problem(context, req, 400, 'Validation Error', 'orderedIds array is required.');
+        }
+
+        const result = await callFn('platform.fn_categories_reorder', orderedIds, context.actorId || null);
+        return ok(context, result);
     } catch (err) {
         return fail(err, context, req);
     }

@@ -266,19 +266,19 @@ BEGIN
         'name', v_org.name,
         'slug', v_org.slug,
         'category', v_org.academy_type,
-        'description', COALESCE(v_org.description, v_org.settings->>'academicSession', 'Excellence in specialized education and instruction.'),
-        'address', COALESCE(v_branch.address, v_org.settings->>'address', 'Main Conservatory Campus'),
-        'city', COALESCE(v_branch.city, v_org.settings->>'city', '—'),
-        'state', COALESCE(v_branch.state, v_org.settings->>'state', '—'),
-        'pincode', COALESCE(v_branch.pincode, v_org.settings->>'pincode', '—'),
-        'phone', COALESCE(v_branch.phone, v_org.settings->>'phone', v_owner.phone, '—'),
-        'email', COALESCE(v_branch.email, v_org.settings->>'email', v_owner.email, '—'),
+        'description', v_org.description,
+        'address', COALESCE(v_branch.address, v_org.settings->>'address'),
+        'city', COALESCE(v_branch.city, v_org.settings->>'city'),
+        'state', COALESCE(v_branch.state, v_org.settings->>'state'),
+        'pincode', COALESCE(v_branch.pincode, v_org.settings->>'pincode'),
+        'phone', COALESCE(v_branch.phone, v_org.settings->>'phone', v_owner.phone),
+        'email', COALESCE(v_branch.email, v_org.settings->>'email', v_owner.email),
         'currency', v_org.currency,
         'timezone', v_org.timezone,
         'logoUrl', v_org.branding->>'logoUrl',
         'coverImage', v_org.cover_image,
-        'tagline', COALESCE(v_org.branding->>'tagline', 'Empowering Learners'),
-        'primaryColor', COALESCE(v_org.branding->>'primaryColor', '#4F46E5')
+        'tagline', v_org.branding->>'tagline',
+        'primaryColor', v_org.branding->>'primaryColor'
     );
 
     -- Tab 4: Verification Documents
@@ -562,6 +562,14 @@ BEGIN
 
     IF v_academy.status = 'suspended' OR v_academy.verification_status <> 'verified' THEN
         RAISE EXCEPTION 'Academy is not verified or is suspended. Publishing and creating courses requires a verified and active academy status.' USING ERRCODE = '22023';
+    END IF;
+
+    IF length(trim(p_code)) < 1 OR length(trim(p_code)) > 30 THEN
+        RAISE EXCEPTION 'Course code must be between 1 and 30 characters' USING ERRCODE = '22023';
+    END IF;
+
+    IF p_level IS NOT NULL AND length(trim(p_level)) > 50 THEN
+        RAISE EXCEPTION 'Course level cannot exceed 50 characters' USING ERRCODE = '22023';
     END IF;
 
     IF p_tuition_amount IS NULL OR p_tuition_amount < 0 THEN
