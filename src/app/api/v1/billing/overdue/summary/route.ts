@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
-import { ok, fail } from '@/lib/api/respond';
+import { ok, fail, problem } from '@/lib/api/respond';
+import { staffScope } from '@/lib/api/scope';
 
 /**
  * GET /api/v1/billing/overdue/summary
@@ -16,6 +17,8 @@ export async function GET(req: NextRequest) {
     if (context instanceof Response) return context;
 
     try {
+        // Totals of whole branches are not limited to the batches of a Staff user
+        if (await staffScope(context)) return problem(context, req, 403, 'Forbidden', 'This summary covers whole branches.');
         const { searchParams } = req.nextUrl;
         const requestedBranch = searchParams.get('branchId') || searchParams.get('branch_id');
 

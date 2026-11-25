@@ -10,6 +10,8 @@
     "db:migrate": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings database/migrate.ts",
     "db:seed": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings database/migrate.ts --seed",
     "test": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings --test tests/platform-integration.test.ts",
+    "test:billing": "node --import ./tests/alias-hooks.mjs --experimental-strip-types --no-warnings --test tests/course-transfer-credits.test.ts",
+    "test:access": "node --import ./tests/alias-hooks.mjs --experimental-strip-types --no-warnings --test tests/staff-access.test.ts",
     "db:dump": "node --env-file-if-exists=.env --experimental-strip-types --no-warnings database/dump.ts"
   },
   "dependencies": {

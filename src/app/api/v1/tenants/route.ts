@@ -3,6 +3,7 @@ import { callFn } from '@/lib/db/db';
 import { ACADEMY_TYPES, hashPassword } from '@/lib/auth';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { branchIdsInScope, staffScope } from '@/lib/api/scope';
 
 /**
  * Academy Workspace, Settings & Provisioning API
@@ -14,11 +15,18 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, null);
     if (context instanceof Response) return context;
     try {
-        const workspace = await callFn('tenant.fn_tenant_get', context.tenantId, context.actorId);
+        const workspace = await callFn<{ branches?: Array<{ branchId: string }> } | null>('tenant.fn_tenant_get', context.tenantId, context.actorId);
         if (!workspace) {
             return problem(context, req, 404, 'Not Found', 'Academy workspace not found.');
         }
-        return ok(context, workspace);
+        const branches = await branchIdsInScope(context);
+        const scope = await staffScope(context);
+        return ok(context, {
+            ...workspace,
+            ...(branches ? { branches: (workspace.branches ?? []).filter(b => branches.has(b.branchId)) } : {}),
+            // Staff limited to their assigned courses and batches
+            staffAccess: scope ? { courses: scope.courseIds.length, batches: scope.batchIds.length } : null,
+        });
     } catch (err) {
         return fail(err, context, req);
     }

@@ -54,6 +54,41 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
     return result.rows as T[];
 }
 
+/** Executes queries inside an explicit database transaction. */
+export async function withTransaction<T>(
+    callback: (tx: { query: <R = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<R[]> }) => Promise<T>
+): Promise<T> {
+    const db = database();
+    if (db instanceof PGlite) {
+        return await db.transaction(async (tx) => {
+            return await callback({
+                query: async <R = Record<string, unknown>>(sql: string, params: unknown[] = []) => {
+                    const res = await tx.query<R>(sql, params);
+                    return res.rows as R[];
+                }
+            });
+        });
+    } else {
+        const client = await db.connect();
+        try {
+            await client.query('BEGIN');
+            const res = await callback({
+                query: async <R = Record<string, unknown>>(sql: string, params: unknown[] = []) => {
+                    const r = await client.query(sql, params);
+                    return r.rows as R[];
+                }
+            });
+            await client.query('COMMIT');
+            return res;
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+}
+
 /** Executes a multi-statement SQL script as one implicit transaction. */
 export async function execScript(sql: string) {
     const db = database();

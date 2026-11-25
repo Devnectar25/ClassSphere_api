@@ -75,9 +75,14 @@ database/tests/
 # additional temporary, backup, dump, and scratch files
 *.temp
 *.sql.bak
+*.sql.tmp
 *.seed.sql
 *.test.sql
 *.test.log
+inspect_*.js
+inspect_*.ts
+temp_*.js
+temp_*.ts
 tmp/
 temp/
 scratch/

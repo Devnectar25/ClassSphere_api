@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn, query } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
-import { batchInScope } from '@/lib/api/scope';
+import { batchInScope, requireStudentInScope, staffScope } from '@/lib/api/scope';
 
 /**
  * Attendance Log, Daily Roll Call, Student & Staff Attendance API
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
             `);
 
             const branchParam = params.get('branchId');
-            const effectiveBranch = (branchParam && branchParam !== 'all') ? branchParam : context.branchId;
+            const effectiveBranch = context.restrictedBranchId ?? ((branchParam && branchParam !== 'all') ? branchParam : context.branchId);
             const staffList = await callFn<Array<{
                 membershipId: string;
                 userId: string;
@@ -77,7 +77,7 @@ export async function GET(req: NextRequest) {
             const rateMap = new Map(rates.map(r => {
                 const tot = Number(r.total || 0);
                 const pr = Number(r.present || 0);
-                return [r.user_id, tot > 0 ? Math.round((pr / tot) * 100) : 100];
+                return [r.user_id, { sessionsMarked: tot, sessionsAttended: pr }];
             }));
 
             const staffWithAttendance = (staffList || []).map(s => {
@@ -94,7 +94,7 @@ export async function GET(req: NextRequest) {
                     batches: s.batches,
                     status: rec?.status || null,
                     remarks: rec?.remarks || null,
-                    overallRate: rateMap.get(s.userId) ?? 100,
+                    ...(rateMap.get(s.userId) ?? { sessionsMarked: 0, sessionsAttended: 0 }),
                 };
             });
 
@@ -111,9 +111,21 @@ export async function GET(req: NextRequest) {
     // Case 1: Particular student's daily attendance history and statistics
     if (studentId) {
         try {
-            const data = await callFn('academics.fn_student_attendance_get',
+            await requireStudentInScope(context, studentId);
+            const data = await callFn<{ student: { enrolledBatches: Array<{ batchId: string }> }; records: Array<{ batchId: string; status: string }> }>('academics.fn_student_attendance_get',
                 context.tenantId, studentId, from || null, to || null);
-            return ok(context, data);
+            const scope = await staffScope(context);
+            if (!scope) return ok(context, data);
+            const records = data.records.filter(r => scope.batchIds.includes(r.batchId));
+            const count = (...statuses: string[]) => records.filter(r => statuses.includes(r.status)).length;
+            return ok(context, {
+                ...data, records,
+                student: { ...data.student, enrolledBatches: data.student.enrolledBatches.filter(b => scope.batchIds.includes(b.batchId)) },
+                summary: {
+                    total: records.length, present: count('present'), absent: count('absent'), late: count('late'), excused: count('excused'),
+                    rate: records.length > 0 ? Math.round((count('present', 'late') / records.length) * 100) : 100,
+                },
+            });
         } catch (err) {
             return fail(err, context, req);
         }
@@ -122,9 +134,21 @@ export async function GET(req: NextRequest) {
     // Case 2: Daily roll call for a batch on a specific session date
     if (batchId && date) {
         try {
-            const data = await callFn('academics.fn_attendance_daily_get',
+            if (!(await batchInScope(context, batchId))) return problem(context, req, 403, 'Forbidden', 'This batch is not available to you.');
+            const data = await callFn<{ students: Array<{ studentId: string }> }>('academics.fn_attendance_daily_get',
                 context.tenantId, batchId, date);
-            return ok(context, data);
+            // Counts behind the overall rate (all batches): a student with no record has no rate, not 100%
+            const counts = await query<{ student_id: string; marked: number; attended: number }>(
+                `SELECT student_id, COUNT(*)::int AS marked, COUNT(*) FILTER (WHERE status IN ('present', 'late'))::int AS attended
+                 FROM academics.attendance_records WHERE tenant_id = $1 AND student_id = ANY($2::uuid[]) GROUP BY student_id`,
+                [context.tenantId, data.students.map(s => s.studentId)]);
+            const byStudent = new Map(counts.map(c => [c.student_id, c]));
+            return ok(context, {
+                ...data,
+                students: data.students.map(s => ({
+                    ...s, sessionsMarked: byStudent.get(s.studentId)?.marked ?? 0, sessionsAttended: byStudent.get(s.studentId)?.attended ?? 0,
+                })),
+            });
         } catch (err) {
             return fail(err, context, req);
         }
@@ -136,6 +160,7 @@ export async function GET(req: NextRequest) {
     }
 
     try {
+        if (!(await batchInScope(context, batchId))) return problem(context, req, 403, 'Forbidden', 'This batch is not available to you.');
         return ok(context, await callFn('academics.fn_attendance_register', context.tenantId, batchId, from, to));
     } catch (err) {
         return fail(err, context, req);
@@ -227,7 +252,7 @@ export async function POST(req: NextRequest) {
             return problem(context, req, 400, 'Validation Error', 'batchId, sessionDate, and records (or studentId) are required.');
         }
         if (!(await batchInScope(context, batchId))) {
-            return problem(context, req, 403, 'Forbidden', 'This batch belongs to another branch.');
+            return problem(context, req, 403, 'Forbidden', 'This batch is not available to you.');
         }
 
         const result = await callFn('academics.fn_attendance_mark_batch',
@@ -251,6 +276,12 @@ export async function DELETE(req: NextRequest) {
             return problem(context, req, 400, 'Validation Error', 'studentId and sessionDate are required.');
         }
 
+        await requireStudentInScope(context, studentId);
+        // The day's records of the student are removed together: all of them must be in the user's batches
+        for (const r of await query<{ batch_id: string }>(
+            `SELECT DISTINCT batch_id FROM academics.attendance_records WHERE tenant_id = $1 AND student_id = $2 AND session_date = $3::date`, [context.tenantId, studentId, sessionDate])) {
+            if (!(await batchInScope(context, r.batch_id))) return problem(context, req, 403, 'Forbidden', 'This day includes attendance of a batch that is not available to you.');
+        }
         const result = await callFn('academics.fn_attendance_delete_record',
             context.tenantId, studentId, sessionDate, context.actorId);
         return ok(context, result);

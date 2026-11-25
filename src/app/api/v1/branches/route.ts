@@ -1,7 +1,45 @@
 import { NextRequest } from 'next/server';
-import { callFn } from '@/lib/db/db';
+import { callFn, query } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { branchIdsInScope } from '@/lib/api/scope';
+
+/**
+ * Branch listing (GET)
+ */
+export async function GET(req: NextRequest) {
+    const context = await authorize(req, 'academics.read');
+    if (context instanceof Response) return context;
+    try {
+        const rows = await query<{
+            branch_id: string;
+            name: string;
+            code: string;
+            address: string | null;
+            phone: string | null;
+            is_primary: boolean;
+            is_active: boolean;
+        }>(
+            `SELECT branch_id, name, code, address, phone, is_primary, is_active
+             FROM tenant.branches
+             WHERE tenant_id = $1 AND is_active = true
+             ORDER BY is_primary DESC, name ASC`,
+            [context.tenantId]
+        );
+        const allowed = await branchIdsInScope(context);
+        return ok(context, rows.filter(r => !allowed || allowed.has(r.branch_id)).map(r => ({
+            branchId: r.branch_id,
+            name: r.name,
+            code: r.code,
+            address: r.address,
+            phone: r.phone,
+            isPrimary: r.is_primary,
+            isActive: r.is_active
+        })));
+    } catch (err) {
+        return fail(err, context, req);
+    }
+}
 
 /**
  * Branch creation (within the subscription's branch quota)

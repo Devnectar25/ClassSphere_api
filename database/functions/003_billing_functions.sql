@@ -46,12 +46,16 @@ BEGIN
 
     -- Generate invoice for each actively enrolled student and course
     FOR v_student IN
-        SELECT s.student_id, c.tuition_amount AS amount, c.title AS course_name
+        SELECT s.student_id, e.enrollment_id, c.tuition_amount AS amount, c.title AS course_name
         FROM academics.students s
         JOIN academics.enrollments e ON e.student_id = s.student_id AND e.status = 'enrolled'
         JOIN academics.batches b ON b.batch_id = e.batch_id
         JOIN academics.courses c ON c.course_id = b.course_id
         WHERE s.tenant_id = p_tenant_id AND s.status = 'active' AND c.tuition_amount > 0
+          -- Enrollments on their own fee plan, or awaiting one after a transfer, are billed by that plan
+          AND NOT EXISTS (SELECT 1 FROM billing.enrollment_fee_plans fp WHERE fp.enrollment_id = e.enrollment_id AND fp.status = 'active')
+          AND NOT EXISTS (SELECT 1 FROM billing.course_transfers ct
+                          WHERE ct.to_enrollment_id = e.enrollment_id AND ct.fee_plan_status = 'pending')
     LOOP
         v_seq := v_seq + 1;
         v_inv_no := v_prefix || LPAD(v_seq::text, 4, '0');
@@ -59,11 +63,11 @@ BEGIN
         INSERT INTO billing.invoices (
             tenant_id, invoice_number, student_id, billing_period,
             subtotal_amount, total_amount, balance_amount, due_date,
-            status, designation, idempotency_key
+            status, designation, idempotency_key, enrollment_id
         ) VALUES (
             p_tenant_id, v_inv_no, v_student.student_id, v_period,
             v_student.amount, v_student.amount, v_student.amount, (p_cycle_date + INTERVAL '15 days')::DATE,
-            'pending', v_student.course_name || ' Tuition — ' || v_period, p_idempotency_key
+            'pending', v_student.course_name || ' Tuition — ' || v_period, p_idempotency_key, v_student.enrollment_id
         );
 
         v_count := v_count + 1;
@@ -240,7 +244,8 @@ AS $$
                (SELECT string_agg(b.name, ', ' ORDER BY b.name)
                 FROM academics.enrollments e JOIN academics.batches b ON b.batch_id = e.batch_id
                 WHERE e.student_id = i.student_id AND e.status = 'enrolled') AS batches,
-               (SELECT MAX(p.created_at) FROM billing.payments p WHERE p.invoice_id = i.invoice_id) AS paid_on
+               (SELECT MAX(p.created_at) FROM billing.payments p
+                WHERE p.invoice_id = i.invoice_id AND p.status NOT IN ('verification_pending', 'rejected')) AS paid_on
         FROM billing.invoices i
         JOIN academics.students s ON s.student_id = i.student_id
         WHERE i.tenant_id = p_tenant_id AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
@@ -273,7 +278,7 @@ AS $$
                         'created_at', p.created_at
                     ) ORDER BY p.created_at ASC)
                     FROM billing.payments p
-                    WHERE p.invoice_id = inv.invoice_id
+                    WHERE p.invoice_id = inv.invoice_id AND p.status NOT IN ('verification_pending', 'rejected')
                 ), '[]'::jsonb)
             ) ORDER BY created_at DESC, invoice_number DESC) FROM inv
         ), '[]'::jsonb),
@@ -348,6 +353,7 @@ AS $$
             SELECT jsonb_agg(jsonb_build_object(
                 'plan_id', fp.plan_id,
                 'name', fp.name,
+                'course_id', fp.course_id,
                 'discount_percent', fp.discount_percent,
                 'tax_percent', fp.tax_percent,
                 'is_active', fp.is_active,

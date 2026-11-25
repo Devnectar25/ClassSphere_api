@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
-import { batchInScope } from '@/lib/api/scope';
+import { batchInScope, staffScope } from '@/lib/api/scope';
 
 /**
  * Tests: schedule tests for a batch across course subjects — branch-scoped
@@ -11,7 +11,9 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
-        return ok(context, await callFn('academics.fn_test_list', context.tenantId, context.branchId));
+        const tests = await callFn<Array<{ batchId: string }>>('academics.fn_test_list', context.tenantId, context.branchId);
+        const scope = await staffScope(context);
+        return ok(context, scope ? tests.filter(t => scope.batchIds.includes(t.batchId)) : tests);
     } catch (err) {
         return fail(err, context, req);
     }

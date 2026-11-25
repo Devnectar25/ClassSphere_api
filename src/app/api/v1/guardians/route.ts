@@ -3,6 +3,7 @@ import { callFn } from '@/lib/db/db';
 import { generatePassword, hashPassword } from '@/lib/auth';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { studentIdsInScope } from '@/lib/api/scope';
 
 /**
  * Guardian Directory API — branch-scoped
@@ -12,7 +13,10 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'guardians.read');
     if (context instanceof Response) return context;
     try {
-        return ok(context, await callFn('academics.fn_guardian_list', context.tenantId, context.branchId));
+        const guardians = await callFn<Array<{ students: Array<{ studentId: string }> }>>('academics.fn_guardian_list', context.tenantId, context.branchId);
+        const students = await studentIdsInScope(context);
+        if (!students) return ok(context, guardians);
+        return ok(context, guardians.map(g => ({ ...g, students: g.students.filter(s => students.has(s.studentId)) })).filter(g => g.students.length > 0));
     } catch (err) {
         return fail(err, context, req);
     }
