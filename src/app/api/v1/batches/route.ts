@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
-import { batchInScope } from '@/lib/api/scope';
+import { batchInScope, staffScope } from '@/lib/api/scope';
 
 /**
  * Batches and Academic Scheduling API — branch-scoped
@@ -12,8 +12,10 @@ export async function GET(req: NextRequest) {
     if (context instanceof Response) return context;
     try {
         const branchParam = req.nextUrl.searchParams.get('branchId');
-        const effectiveBranch = (branchParam && branchParam !== 'all') ? branchParam : context.branchId;
-        return ok(context, await callFn('academics.fn_batch_list', context.tenantId, effectiveBranch));
+        const effectiveBranch = context.restrictedBranchId ?? (branchParam === 'all' ? null : (branchParam || context.branchId));
+        const batches = await callFn<Array<{ batchId: string }>>('academics.fn_batch_list', context.tenantId, effectiveBranch);
+        const scope = await staffScope(context);
+        return ok(context, scope ? batches.filter(b => scope.batchIds.includes(b.batchId)) : batches);
     } catch (err) {
         return fail(err, context, req);
     }

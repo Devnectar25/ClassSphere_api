@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { can, verifyToken, type Permission, type UserRole } from '@/lib/auth';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { callFn } from '@/lib/db/db';
+import { staffMembership } from '@/lib/api/scope';
 
 /**
  * Tenant Context Derivation & RBAC Resolution
@@ -18,6 +19,8 @@ export interface RequestContext {
     actorId: string;
     actorRole: UserRole;
     branchId: string | null;
+    /** Branch the account belongs to; unlike branchId never a branch view the user merely selected */
+    restrictedBranchId: string | null;
     isPlatformAdmin: boolean;
     correlationId: string;
     idempotencyKey?: string;
@@ -25,17 +28,22 @@ export interface RequestContext {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+function requestedBranch(req: NextRequest): string | null {
+    const id = req.headers.get('x-branch-id');
+    return id && UUID.test(id) ? id : null;
+}
+
 export function resolveRequestContext(req: NextRequest): RequestContext | null {
     const header = req.headers.get('authorization') ?? '';
     const claims = header.startsWith('Bearer ') ? verifyToken(header.slice(7)) : null;
     if (!claims) return null;
 
-    const requestedBranch = req.headers.get('x-branch-id');
     return {
         tenantId: claims.tid ?? '',
         actorId: claims.sub,
         actorRole: claims.role,
-        branchId: claims.bid ?? (requestedBranch && UUID.test(requestedBranch) ? requestedBranch : null),
+        branchId: claims.bid ?? requestedBranch(req),
+        restrictedBranchId: claims.bid ?? null,
         isPlatformAdmin: claims.pa,
         correlationId: req.headers.get('x-correlation-id') || crypto.randomUUID(),
         idempotencyKey: req.headers.get('idempotency-key') || req.headers.get('x-idempotency-key') || undefined,
@@ -98,6 +106,12 @@ export async function authorize(req: NextRequest, permission: Permission | 'plat
     if (!context.tenantId) return deny(403, 'Forbidden', 'Open an academy workspace first.');
     if (permission && !context.isPlatformAdmin && !can(context.actorRole, permission)) {
         return deny(403, 'Forbidden', `Your role (${context.actorRole}) does not allow this action.`);
+    }
+    // Branch and assignments of Staff can change while they are signed in
+    if (context.actorRole === 'Staff' && !context.isPlatformAdmin) {
+        const member = await staffMembership(context.tenantId, context.actorId);
+        context.restrictedBranchId = member?.branchId ?? null;
+        context.branchId = context.restrictedBranchId ?? requestedBranch(req);
     }
     return context;
 }

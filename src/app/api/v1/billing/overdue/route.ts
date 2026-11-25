@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
 import { authorize, resolveRequestContext } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { invoiceIdsInScope } from '@/lib/api/scope';
 
 interface OverdueListResponse {
     items: Array<Record<string, unknown>>;
@@ -122,7 +123,17 @@ export async function GET(req: NextRequest) {
             Number.isFinite(minDaysOverdue) ? minDaysOverdue : null
         );
 
-        return ok(context, data);
+        const allowed = await invoiceIdsInScope(context);
+        if (!allowed) return ok(context, data);
+        const items = (data.items as Array<{ invoiceId: string; overdueStatus: string; balanceAmount: number; lateFeeAmount: number | null }>).filter(i => allowed.has(i.invoiceId));
+        const over = items.filter(i => i.overdueStatus === 'overdue' || Number(i.balanceAmount) > 0);
+        return ok(context, {
+            items,
+            summary: {
+                totalOverdueCount: over.length, totalOverdueAmount: over.reduce((t, i) => t + Number(i.balanceAmount), 0), totalLateFees: items.reduce((t, i) => t + Number(i.lateFeeAmount ?? 0), 0),
+                totalWaivedCount: items.filter(i => i.overdueStatus === 'waived').length, totalInGraceCount: items.filter(i => i.overdueStatus === 'in_grace').length,
+            },
+        });
     } catch (err) {
         return fail(err, context, req);
     }

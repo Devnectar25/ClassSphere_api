@@ -5,7 +5,7 @@
  * Passwords: scrypt with a per-user random salt ("scrypt$<salt>$<hash>").
  * Sessions: HMAC-SHA256 signed tokens carrying verified claims (user, academy, role, branch scope).
  */
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, scryptSync, timingSafeEqual, randomInt } from 'node:crypto';
 
 export type UserRole = 'PlatformAdmin' | 'TenantAdmin' | 'BranchManager' | 'Finance' | 'Instructor' | 'Staff' | 'Guardian';
 
@@ -46,11 +46,15 @@ export function hashPassword(password: string) {
     return `scrypt$${salt.toString('base64url')}$${hash.toString('base64url')}`;
 }
 
-/** Readable temporary password, e.g. for a new parent-portal sign-in (shared once, then changed). */
-export function generatePassword() {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-    const chars = [...randomBytes(10)].map(b => alphabet[b % alphabet.length]).join('');
-    return `${chars.slice(0, 5)}-${chars.slice(5)}`;
+/**
+ * Generates a readable temporary password in a standardized, consistent format for parents/guardians:
+ * Pattern: `Parent@<4-digit-code>` (e.g. `Parent@4829`, `Parent@7391`, `Parent@1852`)
+ * The format remains identical for all parents, while each password is uniquely randomized.
+ * Satisfies all complexity rules: uppercase, lowercase, special character (@), and numbers.
+ */
+export function generatePassword(prefix: string = 'Parent'): string {
+    const digits = randomInt(1000, 10000);
+    return `${prefix}@${digits}`;
 }
 
 export function verifyPassword(password: string, stored: string) {

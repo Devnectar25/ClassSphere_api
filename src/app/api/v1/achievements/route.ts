@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { requireStudentInScope, studentIdsInScope } from '@/lib/api/scope';
 
 /**
  * Achievements & Student Honors API — branch-scoped
@@ -10,7 +11,9 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
-        return ok(context, await callFn('engagement.fn_achievement_list', context.tenantId, context.branchId));
+        const achievements = await callFn<Array<{ studentId: string }>>('engagement.fn_achievement_list', context.tenantId, context.branchId);
+        const students = await studentIdsInScope(context);
+        return ok(context, students ? achievements.filter(a => students.has(a.studentId)) : achievements);
     } catch (err) {
         return fail(err, context, req);
     }
@@ -27,6 +30,7 @@ export async function POST(req: NextRequest) {
             return problem(context, req, 400, 'Validation Error', 'studentId, title, and category are required.');
         }
 
+        await requireStudentInScope(context, studentId);
         const result = await callFn(
             'engagement.fn_achievement_create',
             context.tenantId,

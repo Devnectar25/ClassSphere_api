@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn, query } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { staffScope } from '@/lib/api/scope';
 
 /**
  * Course Catalogue & Subjects API
@@ -11,7 +12,20 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
-        return ok(context, await callFn('academics.fn_course_list', context.tenantId));
+        const courses = await callFn<Array<{ courseId: string; branchId: string | null; batchCount: number; studentCount: number }>>('academics.fn_course_list', context.tenantId);
+        const scope = await staffScope(context);
+        const branch = context.restrictedBranchId;
+        if (!scope && !branch) return ok(context, courses);
+
+        // Counted within the user's own branch and batches
+        const counts = new Map((await query<{ course_id: string; batches: number; students: number }>(
+            `SELECT b.course_id, COUNT(DISTINCT b.batch_id)::int AS batches, COUNT(DISTINCT e.student_id)::int AS students
+             FROM academics.batches b LEFT JOIN academics.enrollments e ON e.batch_id = b.batch_id AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+             WHERE b.tenant_id = $1 AND ($2::uuid IS NULL OR b.branch_id = $2::uuid) AND ($3::uuid[] IS NULL OR b.batch_id = ANY($3::uuid[]))
+             GROUP BY b.course_id`, [context.tenantId, branch, scope?.batchIds ?? null])).map(r => [r.course_id, r]));
+        return ok(context, courses
+            .filter(c => (scope ? scope.courseIds.includes(c.courseId) : !c.branchId || c.branchId === branch || counts.has(c.courseId)))
+            .map(c => ({ ...c, batchCount: counts.get(c.courseId)?.batches ?? 0, studentCount: counts.get(c.courseId)?.students ?? 0 })));
     } catch (err) {
         return fail(err, context, req);
     }
@@ -22,7 +36,7 @@ export async function POST(req: NextRequest) {
     const context = await authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
-        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, subjects, isActive, branchId } = await req.json();
+        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, subjects, isActive, branchId, startDate } = await req.json();
         if (!title?.trim() || !code?.trim() || !category?.trim()) {
             return problem(context, req, 400, 'Validation Error', 'Course title, code and category are required.');
         }
@@ -52,10 +66,11 @@ export async function POST(req: NextRequest) {
             Number(tuitionAmount ?? 0), billingPeriod || 'monthly', description || null, subjectList, context.actorId);
 
         const safeBranchId = branchId && branchId !== 'all' ? String(branchId).trim() : null;
+        const safeStartDate = startDate && String(startDate).trim() ? String(startDate).trim() : null;
         if (result?.courseId) {
             await query(
-                'UPDATE academics.courses SET is_active = COALESCE($1, is_active), branch_id = $2 WHERE course_id = $3 AND tenant_id = $4',
-                [typeof isActive === 'boolean' ? isActive : null, safeBranchId, result.courseId, context.tenantId]
+                'UPDATE academics.courses SET is_active = COALESCE($1, is_active), branch_id = $2, start_date = $3 WHERE course_id = $4 AND tenant_id = $5',
+                [typeof isActive === 'boolean' ? isActive : null, safeBranchId, safeStartDate, result.courseId, context.tenantId]
             );
         }
 
@@ -82,7 +97,7 @@ export async function PUT(req: NextRequest) {
         }
 
         // Full course update
-        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, isActive, subjects, branchId } = body;
+        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, isActive, subjects, branchId, startDate } = body;
         if (!title?.trim() || !code?.trim() || !category?.trim()) {
             return problem(context, req, 400, 'Validation Error', 'Course title, code and category are required.');
         }
@@ -112,11 +127,15 @@ export async function PUT(req: NextRequest) {
             typeof isActive === 'boolean' ? isActive : true, subjectList, context.actorId
         );
 
-        if (branchId !== undefined) {
+        if (branchId !== undefined || startDate !== undefined) {
             const safeBranchId = branchId && branchId !== 'all' ? String(branchId).trim() : null;
+            const safeStartDate = startDate && String(startDate).trim() ? String(startDate).trim() : null;
             await query(
-                'UPDATE academics.courses SET branch_id = $1 WHERE course_id = $2 AND tenant_id = $3',
-                [safeBranchId, courseId, context.tenantId]
+                `UPDATE academics.courses 
+                 SET branch_id = CASE WHEN $1::boolean THEN $2::uuid ELSE branch_id END,
+                     start_date = CASE WHEN $3::boolean THEN $4::date ELSE start_date END
+                 WHERE course_id = $5 AND tenant_id = $6`,
+                [branchId !== undefined, safeBranchId, startDate !== undefined, safeStartDate, courseId, context.tenantId]
             );
         }
 

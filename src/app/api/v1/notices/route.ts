@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { callFn, query } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
+import { requireAssignedBatch } from '@/lib/api/scope';
 
 /**
  * Notices & Circular Broadcasts API
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const { title, content, noticeType, status, priority, targetAudience, targetBatchId, branchId, channels, scheduledAt, expiresAt, isPinned } = await req.json();
+        if (targetBatchId) await requireAssignedBatch(context, targetBatchId);
 
         if (!title || !content) {
             return problem(context, req, 400, 'Validation Error', 'Title and content are required fields.');

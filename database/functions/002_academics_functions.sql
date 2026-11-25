@@ -6,6 +6,7 @@
 
 DROP FUNCTION IF EXISTS academics.fn_student_create(UUID, VARCHAR, VARCHAR, VARCHAR, VARCHAR, DATE, VARCHAR, VARCHAR, VARCHAR, UUID, UUID);
 DROP FUNCTION IF EXISTS academics.fn_student_search(UUID, TEXT, VARCHAR, INT, INT);
+DROP FUNCTION IF EXISTS academics.fn_student_search(UUID, UUID, TEXT, VARCHAR, INT, INT);
 DROP FUNCTION IF EXISTS academics.fn_batch_list(UUID);
 DROP FUNCTION IF EXISTS academics.fn_guardian_list(UUID);
 
@@ -103,7 +104,9 @@ CREATE OR REPLACE FUNCTION academics.fn_student_search(
     p_query TEXT DEFAULT NULL,
     p_status VARCHAR(30) DEFAULT NULL,
     p_limit INT DEFAULT 50,
-    p_offset INT DEFAULT 0
+    p_offset INT DEFAULT 0,
+    p_course_id UUID DEFAULT NULL,
+    p_batch_id UUID DEFAULT NULL
 ) RETURNS JSONB
 LANGUAGE plpgsql
 STABLE
@@ -118,7 +121,26 @@ BEGIN
     SELECT COUNT(*) INTO v_total
     FROM academics.students s
     WHERE s.tenant_id = p_tenant_id
-      AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
+      AND (p_branch_id IS NULL OR s.branch_id = p_branch_id OR EXISTS (
+          SELECT 1 FROM academics.enrollments e
+          JOIN academics.batches b ON b.batch_id = e.batch_id
+          WHERE e.student_id = s.student_id
+            AND b.branch_id = p_branch_id
+            AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+      ))
+      AND (p_course_id IS NULL OR EXISTS (
+          SELECT 1 FROM academics.enrollments e
+          JOIN academics.batches b ON b.batch_id = e.batch_id
+          WHERE e.student_id = s.student_id
+            AND b.course_id = p_course_id
+            AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+      ))
+      AND (p_batch_id IS NULL OR EXISTS (
+          SELECT 1 FROM academics.enrollments e
+          WHERE e.student_id = s.student_id
+            AND e.batch_id = p_batch_id
+            AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+      ))
       AND (p_status IS NULL OR s.status = p_status)
       AND (p_query IS NULL OR (
           s.first_name || ' ' || s.last_name ILIKE '%' || p_query || '%' OR
@@ -132,9 +154,9 @@ BEGIN
                s.enrollment_number, s.status, s.academic_standing, s.matriculation_year, s.created_at, s.branch_id,
                s.profile->>'photo' AS photo,
                (SELECT name FROM tenant.branches br WHERE br.branch_id = s.branch_id) AS branch_name,
-               (SELECT string_agg(b.name, ', ' ORDER BY b.name)
+               (SELECT string_agg(DISTINCT b.name, ', ' ORDER BY b.name)
                 FROM academics.enrollments e JOIN academics.batches b ON b.batch_id = e.batch_id
-                WHERE e.student_id = s.student_id AND e.status = 'enrolled') AS batches,
+                WHERE e.student_id = s.student_id AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')) AS batches,
                (SELECT g.first_name || ' ' || g.last_name
                 FROM academics.student_guardian_links l JOIN academics.guardians g ON g.guardian_id = l.guardian_id
                 WHERE l.student_id = s.student_id
@@ -148,7 +170,26 @@ BEGIN
                 WHERE i.student_id = s.student_id AND i.status <> 'void') AS fee_status
         FROM academics.students s
         WHERE s.tenant_id = p_tenant_id
-          AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
+          AND (p_branch_id IS NULL OR s.branch_id = p_branch_id OR EXISTS (
+              SELECT 1 FROM academics.enrollments e
+              JOIN academics.batches b ON b.batch_id = e.batch_id
+              WHERE e.student_id = s.student_id
+                AND b.branch_id = p_branch_id
+                AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+          ))
+          AND (p_course_id IS NULL OR EXISTS (
+              SELECT 1 FROM academics.enrollments e
+              JOIN academics.batches b ON b.batch_id = e.batch_id
+              WHERE e.student_id = s.student_id
+                AND b.course_id = p_course_id
+                AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+          ))
+          AND (p_batch_id IS NULL OR EXISTS (
+              SELECT 1 FROM academics.enrollments e
+              WHERE e.student_id = s.student_id
+                AND e.batch_id = p_batch_id
+                AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+          ))
           AND (p_status IS NULL OR s.status = p_status)
           AND (p_query IS NULL OR (
               s.first_name || ' ' || s.last_name ILIKE '%' || p_query || '%' OR
@@ -160,7 +201,32 @@ BEGIN
     ) r;
 
     SELECT COALESCE(jsonb_object_agg(status, cnt), '{}'::jsonb) INTO v_counts
-    FROM (SELECT status, COUNT(*) AS cnt FROM academics.students WHERE tenant_id = p_tenant_id AND (p_branch_id IS NULL OR branch_id = p_branch_id) GROUP BY status) c;
+    FROM (
+        SELECT s.status, COUNT(*) AS cnt
+        FROM academics.students s
+        WHERE s.tenant_id = p_tenant_id
+          AND (p_branch_id IS NULL OR s.branch_id = p_branch_id OR EXISTS (
+              SELECT 1 FROM academics.enrollments e
+              JOIN academics.batches b ON b.batch_id = e.batch_id
+              WHERE e.student_id = s.student_id
+                AND b.branch_id = p_branch_id
+                AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+          ))
+          AND (p_course_id IS NULL OR EXISTS (
+              SELECT 1 FROM academics.enrollments e
+              JOIN academics.batches b ON b.batch_id = e.batch_id
+              WHERE e.student_id = s.student_id
+                AND b.course_id = p_course_id
+                AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+          ))
+          AND (p_batch_id IS NULL OR EXISTS (
+              SELECT 1 FROM academics.enrollments e
+              WHERE e.student_id = s.student_id
+                AND e.batch_id = p_batch_id
+                AND e.status IN ('enrolled', 'confirmed', 'active', 'approved')
+          ))
+        GROUP BY s.status
+    ) c;
 
     RETURN jsonb_build_object(
         'total', v_total,
@@ -172,18 +238,22 @@ BEGIN
 END;
 $$;
 
+-- Drop redundant 6-argument overload so 8-argument function with defaults resolves unambiguously
+DROP FUNCTION IF EXISTS academics.fn_student_search(UUID, UUID, TEXT, VARCHAR, INT, INT);
+
 CREATE OR REPLACE FUNCTION academics.fn_course_list(
     p_tenant_id UUID
 ) RETURNS JSONB
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = academics, public
+SET search_path = academics, tenant, public
 AS $$
     SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.title), '[]'::jsonb)
     FROM (
         SELECT c.course_id, c.title, c.code, c.description, c.category, c.level, c.duration_months,
-               c.tuition_amount, c.billing_period, c.is_active,
+               c.tuition_amount, c.billing_period, c.is_active, c.branch_id, c.start_date,
+               COALESCE(br.name, 'All Branches') AS branch_name,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('subject_id', cs.subject_id, 'name', cs.name) ORDER BY cs.sort_order, cs.name)
                          FROM academics.course_subjects cs WHERE cs.course_id = c.course_id), '[]'::jsonb) AS subjects,
                (SELECT COUNT(*) FROM academics.batches b WHERE b.course_id = c.course_id) AS batch_count,
@@ -191,6 +261,7 @@ AS $$
                 FROM academics.enrollments e JOIN academics.batches b ON b.batch_id = e.batch_id
                 WHERE b.course_id = c.course_id AND e.status = 'enrolled') AS student_count
         FROM academics.courses c
+        LEFT JOIN tenant.branches br ON br.branch_id = c.branch_id AND br.tenant_id = c.tenant_id
         WHERE c.tenant_id = p_tenant_id
     ) r;
 $$;
@@ -803,10 +874,18 @@ BEGIN
     END IF;
 
     IF p_batch_id IS NOT NULL THEN
-        IF EXISTS (SELECT 1 FROM academics.enrollments WHERE student_id = p_student_id AND tenant_id = p_tenant_id) THEN
+        -- Closed enrollments (transferred, completed, …) are history and are never moved or reopened here
+        IF EXISTS (SELECT 1 FROM academics.enrollments
+                   WHERE student_id = p_student_id AND batch_id = p_batch_id AND tenant_id = p_tenant_id) THEN
+            UPDATE academics.enrollments SET status = 'enrolled'
+            WHERE student_id = p_student_id AND batch_id = p_batch_id AND tenant_id = p_tenant_id
+              AND status IN ('confirmed', 'active', 'approved', 'pending', 'waitlisted');
+        ELSIF (SELECT COUNT(*) FROM academics.enrollments WHERE student_id = p_student_id AND tenant_id = p_tenant_id
+               AND status IN ('enrolled', 'confirmed', 'active', 'approved')) = 1 THEN
             UPDATE academics.enrollments
             SET batch_id = p_batch_id, status = 'enrolled'
-            WHERE student_id = p_student_id AND tenant_id = p_tenant_id;
+            WHERE student_id = p_student_id AND tenant_id = p_tenant_id
+              AND status IN ('enrolled', 'confirmed', 'active', 'approved');
         ELSE
             INSERT INTO academics.enrollments (tenant_id, student_id, batch_id, status)
             VALUES (p_tenant_id, p_student_id, p_batch_id, 'enrolled');
