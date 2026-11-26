@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { callFn } from '@/lib/db/db';
+import { callFn, query } from '@/lib/db/db';
 import { ACADEMY_TYPES, hashPassword } from '@/lib/auth';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
@@ -15,9 +15,32 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, null);
     if (context instanceof Response) return context;
     try {
-        const workspace = await callFn<{ branches?: Array<{ branchId: string }> } | null>('tenant.fn_tenant_get', context.tenantId, context.actorId);
+        const workspace = await callFn<{ branches?: Array<{ branchId: string; headName?: string | null }> } | null>('tenant.fn_tenant_get', context.tenantId, context.actorId);
         if (!workspace) {
             return problem(context, req, 404, 'Not Found', 'Academy workspace not found.');
+        }
+
+        if (workspace.branches && workspace.branches.length > 0) {
+            const branchManagers = await query<{ branch_id: string; user_id: string; full_name: string }>(
+                `SELECT m.branch_id, m.user_id, u.full_name
+                 FROM tenant.memberships m
+                 JOIN identity_app.users u ON u.user_id = m.user_id
+                 WHERE m.tenant_id = $1 AND m.role = 'BranchManager' AND m.is_active = true AND m.branch_id IS NOT NULL
+                 ORDER BY m.created_at DESC`,
+                [context.tenantId]
+            );
+            const managerMap = new Map<string, string>();
+            for (const bm of branchManagers) {
+                if (!managerMap.has(bm.branch_id)) {
+                    managerMap.set(bm.branch_id, bm.full_name);
+                }
+            }
+            for (const b of workspace.branches) {
+                const managerName = managerMap.get(b.branchId);
+                if (managerName) {
+                    b.headName = managerName;
+                }
+            }
         }
         const branches = await branchIdsInScope(context);
         const scope = await staffScope(context);

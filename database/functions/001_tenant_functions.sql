@@ -501,7 +501,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = tenant, identity_app, academics, public
 AS $$
-    SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.full_name), '[]'::jsonb)
+    SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY CASE WHEN r.role = 'TenantAdmin' THEN 1 WHEN r.role = 'BranchManager' THEN 2 WHEN r.role = 'Finance' THEN 3 WHEN r.role = 'Instructor' THEN 4 ELSE 5 END, r.full_name), '[]'::jsonb)
     FROM (
         SELECT m.membership_id, u.user_id, u.full_name, u.email, u.phone, u.last_login_at,
                m.role, m.title, m.is_active, m.branch_id, b.name AS branch_name,
@@ -582,13 +582,22 @@ CREATE OR REPLACE FUNCTION tenant.fn_membership_set_active(
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = tenant, audit, public
+SET search_path = tenant, identity_app, audit, public
 AS $$
+DECLARE
+    v_user_id UUID;
 BEGIN
     UPDATE tenant.memberships SET is_active = p_is_active
-    WHERE membership_id = p_membership_id AND tenant_id = p_tenant_id;
+    WHERE membership_id = p_membership_id AND tenant_id = p_tenant_id
+    RETURNING user_id INTO v_user_id;
+
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Staff member not found' USING ERRCODE = 'P0002';
+    END IF;
+
+    IF v_user_id IS NOT NULL THEN
+        UPDATE identity_app.users SET is_active = p_is_active
+        WHERE user_id = v_user_id;
     END IF;
 
     INSERT INTO audit.compliance_logs (tenant_id, actor_id, action, entity_type, entity_id, correlation_id, details)
