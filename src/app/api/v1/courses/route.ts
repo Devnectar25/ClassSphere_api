@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
     const context = await authorize(req, 'courses.write');
     if (context instanceof Response) return context;
     try {
-        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, subjects, isActive, branchId, startDate } = await req.json();
+        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, subjects, isActive, branchId, startDate, completionPolicy } = await req.json();
         if (!title?.trim() || !code?.trim() || !category?.trim()) {
             return problem(context, req, 400, 'Validation Error', 'Course title, code and category are required.');
         }
@@ -69,8 +69,8 @@ export async function POST(req: NextRequest) {
         const safeStartDate = startDate && String(startDate).trim() ? String(startDate).trim() : null;
         if (result?.courseId) {
             await query(
-                'UPDATE academics.courses SET is_active = COALESCE($1, is_active), branch_id = $2, start_date = $3 WHERE course_id = $4 AND tenant_id = $5',
-                [typeof isActive === 'boolean' ? isActive : null, safeBranchId, safeStartDate, result.courseId, context.tenantId]
+                'UPDATE academics.courses SET is_active = COALESCE($1, is_active), branch_id = $2, start_date = $3, completion_policy = CASE WHEN $4::boolean THEN $5::jsonb ELSE completion_policy END WHERE course_id = $6 AND tenant_id = $7',
+                [typeof isActive === 'boolean' ? isActive : null, safeBranchId, safeStartDate, completionPolicy !== undefined, JSON.stringify(completionPolicy || {}), result.courseId, context.tenantId]
             );
         }
 
@@ -97,7 +97,7 @@ export async function PUT(req: NextRequest) {
         }
 
         // Full course update
-        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, isActive, subjects, branchId, startDate } = body;
+        const { title, code, category, level, durationMonths, tuitionAmount, billingPeriod, description, isActive, subjects, branchId, startDate, completionPolicy } = body;
         if (!title?.trim() || !code?.trim() || !category?.trim()) {
             return problem(context, req, 400, 'Validation Error', 'Course title, code and category are required.');
         }
@@ -127,15 +127,21 @@ export async function PUT(req: NextRequest) {
             typeof isActive === 'boolean' ? isActive : true, subjectList, context.actorId
         );
 
-        if (branchId !== undefined || startDate !== undefined) {
+        if (branchId !== undefined || startDate !== undefined || completionPolicy !== undefined) {
             const safeBranchId = branchId && branchId !== 'all' ? String(branchId).trim() : null;
             const safeStartDate = startDate && String(startDate).trim() ? String(startDate).trim() : null;
             await query(
                 `UPDATE academics.courses 
                  SET branch_id = CASE WHEN $1::boolean THEN $2::uuid ELSE branch_id END,
-                     start_date = CASE WHEN $3::boolean THEN $4::date ELSE start_date END
-                 WHERE course_id = $5 AND tenant_id = $6`,
-                [branchId !== undefined, safeBranchId, startDate !== undefined, safeStartDate, courseId, context.tenantId]
+                     start_date = CASE WHEN $3::boolean THEN $4::date ELSE start_date END,
+                     completion_policy = CASE WHEN $5::boolean THEN $6::jsonb ELSE completion_policy END
+                 WHERE course_id = $7 AND tenant_id = $8`,
+                [
+                    branchId !== undefined, safeBranchId,
+                    startDate !== undefined, safeStartDate,
+                    completionPolicy !== undefined, JSON.stringify(completionPolicy || {}),
+                    courseId, context.tenantId
+                ]
             );
         }
 

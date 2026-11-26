@@ -374,7 +374,7 @@ AS $$
             SELECT jsonb_agg(to_jsonb(b) ORDER BY b.is_primary DESC, b.name)
             FROM (
                 SELECT br.branch_id, br.name, br.code, br.address, br.city, br.state, br.country, br.location, br.pincode, br.phone, br.email,
-                       br.is_primary, br.is_active, hu.full_name AS head_name,
+                       br.is_primary, br.is_active, COALESCE(hu.full_name, br.head_name) AS head_name,
                        (SELECT COUNT(*) FROM academics.batches bt WHERE bt.branch_id = br.branch_id) AS batch_count,
                        (SELECT COUNT(DISTINCT s.student_id)
                         FROM academics.students s

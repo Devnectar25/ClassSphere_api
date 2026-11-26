@@ -110,7 +110,7 @@ export interface LinkedGuardianInfo {
 export function generateReceiptNumber(): string {
     const now = new Date();
     const yyyymmdd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-    const hex = crypto.randomBytes(3).toString('hex').toUpperCase();
+    const hex = crypto.randomBytes(4).toString('hex').toUpperCase();
     return `RCP-${yyyymmdd}-${hex}`;
 }
 
@@ -468,7 +468,7 @@ function toInstallment(inv: InvoiceRow, idx: number, payments: PaymentRow[], tod
     const lastPaid = settled[0] ? new Date(settled[0].created_at).getTime() : 0;
     const failed = balance <= 0 ? null
         : latest?.status === 'rejected' ? { at: new Date(latest.created_at).toISOString(), reason: 'Payment was not verified' }
-        : inv.failed_at && new Date(inv.failed_at).getTime() > lastPaid ? { at: new Date(inv.failed_at).toISOString(), reason: inv.failure_reason } : null;
+            : inv.failed_at && new Date(inv.failed_at).getTime() > lastPaid ? { at: new Date(inv.failed_at).toISOString(), reason: inv.failure_reason } : null;
 
     let status: CourseInstallment['status'] = 'pending';
     if (balance <= 0) status = pending > 0 ? 'verification_pending' : carriedOut > 0 ? 'partially_paid' : 'paid';

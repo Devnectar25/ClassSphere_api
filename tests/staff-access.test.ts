@@ -189,7 +189,7 @@ test('assignments are managed by academy admins, validated and only for Staff', 
     assert.equal((await call('staff', 'PUT', { id: admin, role: 'TenantAdmin' }, { body: { action: 'assign', membershipId: u.membershipId, branchId: north, assignments: { batchIds: [foreign] } } })).status, 400);
     const created = await must(call('staff', 'POST', { id: admin, role: 'TenantAdmin' }, { body: { fullName: 'S T', email: 'st@t.test', password: 'Password1!', role: 'Staff', branchId: north, assignments: { courseIds: [B.A1.course], batchIds: [B.A2.batch] } } }));
     const member = (await must(call('staff', 'GET', { id: admin, role: 'TenantAdmin' }))).find((x: Json) => x.membershipId === created.membershipId);
-    assert.deepEqual(member.assignments, { courseIds: [B.A1.course], batchIds: [B.A2.batch] });
+    assert.deepEqual([member.assignments, member.assignedTo], [{ courseIds: [B.A1.course], batchIds: [B.A2.batch] }, ['C-A1: A2']]);
     assert.equal((await call('staff', 'POST', { id: admin, role: 'TenantAdmin' }, { body: { fullName: 'S U', email: 'su@t.test', password: 'Password1!', role: 'Staff', branchId: north, assignments: { batchIds: [B.X1.batch] } } })).status, 400);
     assert.equal((await query(`SELECT 1 FROM identity_app.users WHERE email = 'su@t.test'`)).length, 0, 'nothing is created');
 });
@@ -207,4 +207,43 @@ test('other branch users stay within their branch; admins see everything', async
     assert.equal((await names(call('batches', 'GET', boss, { search: '?branchId=all', header: north }), 'name')).length, 5, 'a selected branch view is not a restriction');
     assert.equal((await names(call('courses', 'GET', boss, { header: north }), 'title')).length, 4);
     assert.equal((await must(call('students', 'GET', boss, { search: `?studentId=${S.Dan}`, header: north }))).enrollments.length, 1);
+});
+
+test('losing an assigned batch never opens the rest of its course', async () => {
+    await batch('Tmp', north, B.A1.course);
+    const u = await user('Staff', north);
+    await must(assign(u, north, ['B1'], ['Tmp']));
+    const row = async () => (await must(call('staff', 'GET', { id: admin, role: 'TenantAdmin' }))).find((x: Json) => x.membershipId === u.membershipId);
+    assert.deepEqual((await row()).assignedTo, ['C-A1: Tmp', 'C-B1: all batches']);
+    await query(`DELETE FROM academics.batches WHERE batch_id = $1`, [B.Tmp.batch]);
+    assert.deepEqual([await names(call('batches', 'GET', u), 'name'), await names(call('courses', 'GET', u), 'title')], [['B1'], ['C-B1']]);
+    const now = await row();
+    assert.deepEqual([now.assignments.batchIds, now.assignedTo], [[], ['C-B1: all batches']]);
+    await must(call('staff', 'PUT', { id: admin, role: 'TenantAdmin' }, { body: { action: 'assign', membershipId: u.membershipId, branchId: north, assignments: now.assignments } }));
+});
+
+test('a batch belongs to the branch of its course, and moving it is saved', async () => {
+    const boss = { id: admin, role: 'TenantAdmin' };
+    const body = { name: 'New batch', courseId: B.X1.course, startDate: '2027-01-01', schedules: [{ weekday: 1, startTime: '10:00', endTime: '11:00' }] };
+    assert.equal((await call('batches', 'POST', boss, { body: { ...body, branchId: north } })).status, 400);
+    const branch = async (id: string) => (await query<Json>(`SELECT branch_id FROM academics.batches WHERE batch_id = $1`, [id]))[0].branch_id;
+    const made = await must(call('batches', 'POST', boss, { body, header: north }));
+    assert.equal(await branch(made.batchId), south, 'the branch of the course, not the selected view');
+    await must(call('batches', 'POST', boss, { body: { ...body, branchId: south }, header: north }));
+    assert.equal((await call('batches', 'POST', await user('TenantAdmin'), { body: { ...body, branchId: randomUUID(), courseId: B.Shared.course } })).status, 400);
+
+    const edit = (extra: Json, u: Json = boss) => call('batches', 'PUT', u, { body: { ...body, batchId: B.Shared.batch, courseId: B.Shared.course, name: 'Shared', ...extra } });
+    await must(edit({ branchId: north }));
+    assert.equal(await branch(B.Shared.batch), north);
+    assert.equal((await query(`SELECT 1 FROM audit.compliance_logs WHERE action = 'batch.branch_changed' AND entity_id = $1`, [B.Shared.batch])).length, 1);
+    await must(edit({}));
+    assert.equal(await branch(B.Shared.batch), north, 'kept when not sent');
+    assert.equal((await edit({ courseId: B.X1.course })).status, 400, 'a South course cannot move into a North batch');
+    // a batch saved earlier in the wrong branch can still be edited, and corrected
+    await query(`UPDATE academics.batches SET branch_id = $2 WHERE batch_id = $1`, [made.batchId, north]);
+    const fix = (extra: Json) => call('batches', 'PUT', boss, { body: { ...body, batchId: made.batchId, ...extra } });
+    await must(fix({ branchId: north }));
+    await must(fix({ branchId: south }));
+    assert.equal(await branch(made.batchId), south);
+    assert.equal((await fix({ branchId: north })).status, 400);
 });
