@@ -11,7 +11,9 @@ import { academyToday, assertInstallmentsWithinCourse, getBatchPeriod, getCourse
 import { assessConsumption, transferDay } from '@/lib/billing/fee-consumption';
 import { parseDate } from '@/lib/billing/fee-plans';
 import { parseFeePlanInput } from '@/lib/billing/fee-plans';
-import { executeCourseTransfer, listTransfers } from '@/lib/billing/course-transfer';
+import { executeCourseTransfer, listTransfers, type TransferResult, type TransferSummary } from '@/lib/billing/course-transfer';
+import { generateReceiptNumber } from '@/lib/billing/fee-installments';
+import { calculateStudentCourseProgress } from '@/lib/academics/course-completion';
 
 /**
  * Students Directory & Enrollment API — branch-scoped
@@ -166,10 +168,17 @@ export async function GET(req: NextRequest) {
             }
 
             const student = studentRows[0];
-            const financials = new Map(await Promise.all(enrollments.map(async e => {
-                const info = await getEnrollment({ query }, context.tenantId, e.enrollment_id);
-                return [e.enrollment_id, await getEnrollmentFinancials({ query }, context.tenantId, info)] as const;
-            })));
+            const [financialsList, academicProgressList] = await Promise.all([
+                Promise.all(enrollments.map(async e => {
+                    const info = await getEnrollment({ query }, context.tenantId, e.enrollment_id);
+                    return [e.enrollment_id, await getEnrollmentFinancials({ query }, context.tenantId, info)] as const;
+                })),
+                Promise.all(enrollments.map(async e => {
+                    return [e.enrollment_id, await calculateStudentCourseProgress(context.tenantId, e.enrollment_id)] as const;
+                }))
+            ]);
+            const financials = new Map(financialsList);
+            const academicProgressMap = new Map(academicProgressList);
             const creditBalance = await getCreditBalance({ query }, context.tenantId, studentIdParam);
             const recordedTransfers = new Map((await listTransfers({ query }, context.tenantId,
                 { branchId: null, studentId: studentIdParam, transferId: null })).map(t => [t.transferId, t]));
@@ -337,7 +346,8 @@ export async function GET(req: NextRequest) {
                         enrolledAt: e.enrolled_at,
                         transferReason: e.transfer_reason,
                         remarks: e.remarks,
-                        transferredAt: e.transferred_at
+                        transferredAt: e.transferred_at,
+                        academicProgress: academicProgressMap.get(e.enrollment_id) || null
                     };
                 }),
                 invoices: studentInvoices.map(i => ({
@@ -616,7 +626,7 @@ export async function POST(req: NextRequest) {
                     invoiceId = invRows[0]?.invoice_id;
 
                     if (isPaid && invoiceId) {
-                        const rcpNo = `RCP-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                        const rcpNo = generateReceiptNumber();
                         await query(
                             `INSERT INTO billing.payments (
                                 tenant_id, invoice_id, student_id, payment_reference, amount,
@@ -903,14 +913,14 @@ export async function POST(req: NextRequest) {
             }
 
             // 9. Transfer, credit review and fee plan succeed or fail together
-            const perform = (tx: Parameters<Parameters<typeof withTransaction>[0]>[0]) => executeCourseTransfer(tx, {
+            const perform = (tx: Parameters<Parameters<typeof withTransaction>[0]>[0]): Promise<TransferResult> => executeCourseTransfer(tx, {
                 tenantId: context.tenantId, actorId: context.actorId, studentId, fromEnrollmentId: currentEnrollmentId, toBatchId: destinationBatchId,
                 transferDate, reason: transferReason, remarks, review, feePlan,
                 waiver: body.waiveOldOutstanding ? { reason: waiverReason } : null,
             });
             // The review shows exactly what the transfer would do: it is carried out and rolled back
             if (body.dryRun === true) {
-                let preview: Awaited<ReturnType<typeof perform>> | null = null;
+                let preview: TransferResult | null = null;
                 const rollback = new Error('transfer preview');
                 await withTransaction(async tx => {
                     preview = await perform(tx);
@@ -924,8 +934,8 @@ export async function POST(req: NextRequest) {
                     installments: plan?.installments.map(i => ({ installmentNumber: i.installmentNumber, dueDate: i.dueDate, gross: i.gross, credit: i.credit, payable: i.payable })) ?? null,
                 });
             }
-            const result = await withTransaction(async tx => {
-                const done = await perform(tx);
+            const result: TransferResult = await withTransaction<TransferResult>(async tx => {
+                const done: TransferResult = await perform(tx);
                 // What was reviewed is what is saved: a payment or attendance change in between asks for another review
                 const reviewed = body.reviewed as Record<string, unknown> | undefined;
                 const changed = reviewed ? (['verifiedPaid', 'consumedAmount', 'eligibleCredit', 'approvedCredit', 'creditApplied', 'remainingCredit', 'payable', 'remainingOutstanding'] as const)
@@ -1157,11 +1167,21 @@ export async function POST(req: NextRequest) {
             const yyyymm = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
             const period = now.toLocaleString('en-US', { month: 'short', year: 'numeric' });
 
+            const maxInvRows = await query<{ max_inv: string | null }>(
+                `SELECT MAX(invoice_number) as max_inv FROM billing.invoices WHERE tenant_id = $1 AND invoice_number LIKE $2`,
+                [context.tenantId, `INV-${yyyymm}-%`]
+            );
+            let seq = 0;
+            if (maxInvRows[0]?.max_inv) {
+                const match = maxInvRows[0].max_inv.match(/INV-\d{6}-(\d+)/);
+                if (match) seq = parseInt(match[1], 10);
+            }
             const countRows = await query<{ count: string }>(
                 `SELECT COUNT(*) as count FROM billing.invoices WHERE tenant_id = $1 AND invoice_number LIKE $2`,
                 [context.tenantId, `INV-${yyyymm}-%`]
             );
-            let seq = parseInt(countRows[0]?.count || '0', 10);
+            const initialCount = parseInt(countRows[0]?.count || '0', 10);
+            if (initialCount > seq) seq = initialCount;
 
             const initialPayment = feeStructure.initialPayment;
             let remainingInitialPay = initialPayment && Number(initialPayment.amount) > 0 ? Number(initialPayment.amount) : 0;
@@ -1182,7 +1202,16 @@ export async function POST(req: NextRequest) {
             for (let idx = 0; idx < installments.length; idx++) {
                 const inst = installments[idx];
                 seq++;
-                const invNo = `INV-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                let invNo = `INV-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                while (true) {
+                    const existing = await query<{ invoice_id: string }>(
+                        `SELECT invoice_id FROM billing.invoices WHERE tenant_id = $1 AND invoice_number = $2 LIMIT 1`,
+                        [context.tenantId, invNo]
+                    );
+                    if (existing.length === 0) break;
+                    seq++;
+                    invNo = `INV-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                }
                 const instAmount = Number(inst.amount) || 0;
                 const dueDate = inst.dueDate ? new Date(inst.dueDate) : new Date(Date.now() + 15 * 86400000);
                 const given = inst.designation?.trim();
@@ -1227,12 +1256,7 @@ export async function POST(req: NextRequest) {
                 if (idx === 0 && paidAmount > 0 && balanceAmount > 0) underpaidInvoiceId = invRows[0]?.invoice_id ?? null;
 
                 if (paidAmount > 0 && invRows.length > 0) {
-                    const payCountRows = await query<{ count: string }>(
-                        `SELECT COUNT(*) as count FROM billing.payments WHERE tenant_id = $1 AND receipt_number LIKE $2`,
-                        [context.tenantId, `RCP-${yyyymm}-%`]
-                    );
-                    const paySeq = parseInt(payCountRows[0]?.count || '0', 10) + 1;
-                    const rcpNo = `RCP-${yyyymm}-${String(paySeq).padStart(4, '0')}`;
+                    const rcpNo = generateReceiptNumber();
 
                     await query(
                         `INSERT INTO billing.payments (
@@ -1315,7 +1339,7 @@ export async function POST(req: NextRequest) {
                 );
 
                 if (isPaid && invRows.length > 0) {
-                    const rcpNo = `RCP-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                    const rcpNo = generateReceiptNumber();
                     await query(
                         `INSERT INTO billing.payments (
                             tenant_id, invoice_id, student_id, payment_reference, amount,
@@ -1546,14 +1570,7 @@ export async function PUT(req: NextRequest) {
                         [inv.invoice_id, context.tenantId]
                     );
                     if (existingPayments.length === 0) {
-                        const now = new Date();
-                        const yyyymm = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-                        const countRows = await query<{ count: string }>(
-                            `SELECT COUNT(*) as count FROM billing.payments WHERE tenant_id = $1 AND receipt_number LIKE $2`,
-                            [context.tenantId, `RCP-${yyyymm}-%`]
-                        );
-                        const seq = parseInt(countRows[0]?.count || '0', 10) + 1;
-                        const rcpNo = `RCP-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                        const rcpNo = generateReceiptNumber();
                         await query(
                             `INSERT INTO billing.payments (
                                 tenant_id, invoice_id, student_id, payment_reference, amount,
@@ -1645,7 +1662,7 @@ export async function PUT(req: NextRequest) {
                     );
 
                     if (isPaid && invRows.length > 0) {
-                        const rcpNo = `RCP-${yyyymm}-${String(seq).padStart(4, '0')}`;
+                        const rcpNo = generateReceiptNumber();
                         await query(
                             `INSERT INTO billing.payments (
                                 tenant_id, invoice_id, student_id, payment_reference, amount,

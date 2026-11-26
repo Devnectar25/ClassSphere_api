@@ -252,7 +252,7 @@ AS $$
     SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.title), '[]'::jsonb)
     FROM (
         SELECT c.course_id, c.title, c.code, c.description, c.category, c.level, c.duration_months,
-               c.tuition_amount, c.billing_period, c.is_active, c.branch_id, c.start_date,
+               c.tuition_amount, c.billing_period, c.is_active, c.branch_id, c.start_date, c.completion_policy,
                COALESCE(br.name, 'All Branches') AS branch_name,
                COALESCE((SELECT jsonb_agg(jsonb_build_object('subject_id', cs.subject_id, 'name', cs.name) ORDER BY cs.sort_order, cs.name)
                          FROM academics.course_subjects cs WHERE cs.course_id = c.course_id), '[]'::jsonb) AS subjects,

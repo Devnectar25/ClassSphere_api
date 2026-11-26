@@ -1,8 +1,19 @@
 import { NextRequest } from 'next/server';
-import { callFn } from '@/lib/db/db';
+import { callFn, query, withTransaction } from '@/lib/db/db';
 import { authorize } from '@/lib/api/context';
 import { ok, fail, problem } from '@/lib/api/respond';
 import { batchInScope, staffScope } from '@/lib/api/scope';
+import { billingError as ruleError, writeAudit } from '@/lib/billing/credit-ledger';
+
+/** A course of one branch has its batches in that branch; an academy-wide course may have them anywhere. */
+async function checkBranch(tenantId: string, courseId: string, branchId: string) {
+    const [course] = await query<{ title: string; branch_id: string | null; branch_name: string | null }>(
+        `SELECT c.title, c.branch_id, b.name AS branch_name FROM academics.courses c LEFT JOIN tenant.branches b ON b.branch_id = c.branch_id
+         WHERE c.tenant_id = $1 AND c.course_id = $2`, [tenantId, courseId]);
+    if (course?.branch_id && course.branch_id !== branchId) throw ruleError('invalid', `${course.title.trim()} is a course of ${course.branch_name}. Its batches must be in that branch.`);
+    const [branch] = await query(`SELECT 1 FROM tenant.branches WHERE tenant_id = $1 AND branch_id = $2`, [tenantId, branchId]);
+    if (!branch) throw ruleError('invalid', 'Branch not found.');
+}
 
 /**
  * Batches and Academic Scheduling API — branch-scoped
@@ -33,10 +44,13 @@ export async function POST(req: NextRequest) {
         if (schedules !== undefined && !Array.isArray(schedules)) {
             return problem(context, req, 400, 'Validation Error', 'schedules must be an array.');
         }
-        if (context.branchId && branchId && context.branchId !== branchId) {
+        // Only an account of one branch is limited to it; a selected branch view is just the default
+        if (context.restrictedBranchId && branchId && context.restrictedBranchId !== branchId) {
             return problem(context, req, 403, 'Forbidden', 'Cannot create a batch for another branch.');
         }
-        const effectiveBranchId = context.branchId || branchId || null;
+        const [course] = await query<{ branch_id: string | null }>(`SELECT branch_id FROM academics.courses WHERE tenant_id = $1 AND course_id = $2`, [context.tenantId, courseId]);
+        const effectiveBranchId = context.restrictedBranchId || branchId || course?.branch_id || context.branchId || null;
+        if (effectiveBranchId) await checkBranch(context.tenantId, courseId, effectiveBranchId);
         const result = await callFn('academics.fn_batch_create',
             context.tenantId,
             name.trim(),
@@ -75,7 +89,16 @@ export async function PUT(req: NextRequest) {
             return problem(context, req, 403, 'Forbidden', 'This batch belongs to another branch.');
         }
 
-        const effectiveBranchId = branchId || context.branchId;
+        const [current] = await query<{ branch_id: string | null; course_id: string }>(
+            `SELECT branch_id, course_id FROM academics.batches WHERE tenant_id = $1 AND batch_id = $2`, [context.tenantId, batchId]);
+        if (!current) return problem(context, req, 404, 'Not Found', 'Batch not found.');
+        const newBranchId = branchId ? String(branchId) : current.branch_id;
+        const branchChanged = newBranchId !== current.branch_id;
+        if (branchChanged && context.restrictedBranchId && newBranchId !== context.restrictedBranchId) {
+            return problem(context, req, 403, 'Forbidden', 'You cannot move a batch to another branch.');
+        }
+        // An older batch may keep its branch until it or its course is changed
+        if (newBranchId && (branchChanged || courseId !== current.course_id)) await checkBranch(context.tenantId, courseId, newBranchId);
 
         const result = await callFn('academics.fn_batch_update',
             context.tenantId,
@@ -91,6 +114,15 @@ export async function PUT(req: NextRequest) {
             JSON.stringify(Array.isArray(schedules) ? schedules : []),
             context.actorId
         );
+        if (branchChanged) {
+            await withTransaction(async tx => {
+                await tx.query(`UPDATE academics.batches SET branch_id = $3 WHERE tenant_id = $1 AND batch_id = $2`, [context.tenantId, batchId, newBranchId]);
+                await writeAudit(tx, {
+                    tenantId: context.tenantId, actorId: context.actorId, action: 'batch.branch_changed', entityType: 'batch', entityId: batchId,
+                    details: { name: name.trim(), from: current.branch_id, to: newBranchId },
+                });
+            });
+        }
         return ok(context, result);
     } catch (err) {
         return fail(err, context, req);

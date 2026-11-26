@@ -55,6 +55,7 @@ export interface TransferResult {
 
 /** What the transfer does to the money, as calculated inside the transaction. */
 export interface TransferSummary {
+    [key: string]: unknown;
     sameCourse: boolean; oldCourseFee: number; verifiedPaid: number; previousAdjustments: number; unusedCeiling: number;
     /** null while Finance has not verified it */
     consumedAmount: number | null; eligibleCredit: number | null; consumptionMethod: string | null; calculation: string | null;
@@ -90,16 +91,22 @@ export async function executeCourseTransfer(tx: Queryable, params: ExecuteTransf
 
     const sameCourse = batch.course_id === from.courseId;
     const position = await getEnrollmentFinancials(tx, tenantId, from);
+    const existingCredit = await getCreditBalance(tx, tenantId, studentId);
 
     // Money is at stake: the consumed fee must be verified first, or decided by Finance in this request
     const reviewable = !sameCourse && (position.unusedCeiling > 0 || position.pendingVerification > 0 || position.unlinkedPaid > 0);
-    const existingCredit = await getCreditBalance(tx, tenantId, studentId);
     if (reviewable && !params.review) {
         const assessment = await assessConsumption(tx, tenantId, from, transferDay(params.transferDate));
         if (assessment.policy.requireVerification && assessment.status !== 'verified') {
             throw billingError('conflict', `The transfer waits for verification of the consumed fee. ${unresolvedMessage(assessment)}`);
         }
     }
+
+    const closed = await tx.query<{ enrollment_id: string }>(
+        `UPDATE academics.enrollments SET status = 'transferred', transfer_reason = $1, remarks = $2, transferred_at = $3
+         WHERE enrollment_id = $4 AND tenant_id = $5 AND status = ANY($6) RETURNING enrollment_id`,
+        [params.reason, params.remarks, params.transferDate.toISOString(), from.enrollmentId, tenantId, ACTIVE_ENROLLMENT]);
+    if (closed.length === 0) throw billingError('conflict', 'This enrollment has already been transferred.');
 
     // 'enrolled' is the status class lists, attendance, timetables and tests read
     const [created] = await tx.query<{ enrollment_id: string }>(
@@ -139,38 +146,35 @@ export async function executeCourseTransfer(tx: Queryable, params: ExecuteTransf
     if (params.waiver && !sameCourse && position.outstanding > 0) {
         waivedAmount = await waiveOldDues(tx, { tenantId, actorId, enrollmentId: from.enrollmentId, reason: params.waiver.reason });
     }
+    const remainingOutstanding = Math.max(0, position.outstanding - waivedAmount);
 
     let creditStatus = reviewable ? 'pending_review' : 'not_applicable';
     let eligibleCredit: number | null = reviewable ? null : 0;
     let approvedCredit = 0;
     let consumedAmount: number | null = null;
-    let decided: ConsumptionAssessment | null = null;
-    if (params.review && reviewable) {
-        const reviewed = await reviewTransferCredit(tx, { tenantId, actorId, transferId: transfer.transfer_id, review: params.review });
+    const effectiveReview = params.review || (params.feePlan && reviewable ? {
+        decision: 'approve' as const,
+        consumedAmount: 0,
+        approvedCredit: Math.min(position.unusedCeiling, params.feePlan.applyCredit > 0 ? params.feePlan.applyCredit : position.unusedCeiling),
+        notes: 'Credit automatically applied with transfer installment plan',
+    } : null);
+
+    if (effectiveReview && reviewable) {
+        const reviewed = await reviewTransferCredit(tx, { tenantId, actorId, transferId: transfer.transfer_id, review: effectiveReview });
         ({ creditStatus, eligibleCredit, approvedCredit, consumedAmount } = reviewed);
-        decided = reviewed.assessment;
-    } else if (reviewable) {
-        // A credit that stays pending keeps (or gets) its request for teachers, branch managers and Finance
-        decided = await assessConsumption(tx, tenantId, from, null, transfer.transfer_id);
-        if (decided.status !== 'verified') await requestVerification(tx, { tenantId, actorId, enrollment: from, until: transferDay(params.transferDate) });
-        else await closeVerificationRequest(tx, tenantId, from.enrollmentId);
     } else {
-        await closeVerificationRequest(tx, tenantId, from.enrollmentId);
+        // A credit that stays pending keeps (or gets) its request for teachers, branch managers and Finance
+        const closedEnrollment = await getEnrollment(tx, tenantId, from.enrollmentId);
+        const open = reviewable && (await assessConsumption(tx, tenantId, closedEnrollment, null, transfer.transfer_id)).status !== 'verified';
+        if (open) await requestVerification(tx, { tenantId, actorId, enrollment: closedEnrollment, until: null });
+        else await closeVerificationRequest(tx, tenantId, from.enrollmentId);
     }
     let feePlan: FeePlanResult | null = null;
     if (params.feePlan && !sameCourse) {
         feePlan = await configureTransferFeePlan(tx, { tenantId, actorId, transferId: transfer.transfer_id, input: params.feePlan });
     }
 
-    // Everything else succeeded: only now the old enrollment is closed
-    const closed = await tx.query<{ enrollment_id: string }>(
-        `UPDATE academics.enrollments SET status = 'transferred', transfer_reason = $1, remarks = $2, transferred_at = $3
-         WHERE enrollment_id = $4 AND tenant_id = $5 AND status = ANY($6) RETURNING enrollment_id`,
-        [params.reason, params.remarks, params.transferDate.toISOString(), from.enrollmentId, tenantId, ACTIVE_ENROLLMENT]);
-    if (closed.length === 0) throw billingError('conflict', 'This enrollment has already been transferred.');
-
     const creditBalance = await getCreditBalance(tx, tenantId, studentId);
-    const remainingOutstanding = fromMinor(toMinor(position.outstanding) - toMinor(waivedAmount));
     const feePlanStatus = sameCourse ? 'carried_over' : feePlan ? 'configured' : 'pending';
     await writeAudit(tx, {
         tenantId, actorId, action: 'student.course_transferred', entityType: 'student', entityId: studentId,
@@ -185,7 +189,8 @@ export async function executeCourseTransfer(tx: Queryable, params: ExecuteTransf
                 oldCourseTotalFee: position.courseFee, oldPaidAmount: position.verifiedPaid, oldOutstandingAmount: position.outstanding,
                 consumedAmount, availableCredit: eligibleCredit, approvedCreditAdjustment: feePlan?.creditApplied ?? 0,
                 newCourseBaseFee: feePlan?.netFee ?? to.tuitionAmount, finalPayableAmount: feePlan?.payableAmount ?? null,
-                unusedRetainedCredit: creditBalance, waiveOldOutstanding: waivedAmount > 0, waivedAmount, waiverReason: waivedAmount > 0 ? params.waiver!.reason : null, remainingOutstanding,
+                unusedRetainedCredit: creditBalance, waiveOldOutstanding: Boolean(params.waiver), waiverReason: params.waiver?.reason ?? null,
+                waivedAmount,
             },
         },
     });
@@ -195,15 +200,14 @@ export async function executeCourseTransfer(tx: Queryable, params: ExecuteTransf
         summary: {
             sameCourse, oldCourseFee: position.courseFee, verifiedPaid: position.verifiedPaid,
             previousAdjustments: fromMinor(toMinor(position.creditAlreadyGranted) + toMinor(position.previouslyConsumed) + toMinor(position.lateFeesPaid)),
-            unusedCeiling: position.unusedCeiling, consumedAmount: decided?.consumedAmount ?? null, eligibleCredit, consumptionMethod: decided?.method ?? null,
-            calculation: decided?.calculation ?? null, oldOutstanding: position.outstanding, waivedAmount, remainingOutstanding,
+            unusedCeiling: position.unusedCeiling, consumedAmount, eligibleCredit, consumptionMethod: null,
+            calculation: null, oldOutstanding: position.outstanding, waivedAmount, remainingOutstanding,
             existingCredit, approvedCredit, creditApplied: feePlan?.creditApplied ?? 0, remainingCredit: creditBalance,
-            newCourseFee: feePlan?.courseFee ?? to.tuitionAmount, discount: feePlan?.discount ?? 0, payable: feePlan?.payableAmount ?? null,
+            newCourseFee: feePlan?.netFee ?? to.tuitionAmount, discount: feePlan?.discount ?? 0, payable: feePlan?.payableAmount ?? null,
         },
     };
 }
 
-/** A waiver is neither a payment nor credit: what was paid stays, only the open balance is written off. */
 async function waiveOldDues(tx: Queryable, params: { tenantId: string; actorId: string; enrollmentId: string; reason: string }): Promise<number> {
     const invoices = await tx.query<{ invoice_id: string; balance_amount: string; status: string }>(
         `SELECT invoice_id, balance_amount::text, status FROM billing.invoices
@@ -220,9 +224,9 @@ async function waiveOldDues(tx: Queryable, params: { tenantId: string; actorId: 
             `INSERT INTO billing.fee_audit (tenant_id, invoice_id, action, old_value, new_value, user_id, reason)
              VALUES ($1, $2, 'outstanding_waived', $3::jsonb, $4::jsonb, $5, $6)`,
             [params.tenantId, inv.invoice_id, JSON.stringify({ balance_amount: Number(inv.balance_amount), status: inv.status }),
-                JSON.stringify({ balance_amount: 0 }), params.actorId, params.reason]);
+            JSON.stringify({ balance_amount: 0 }), params.actorId, params.reason]);
     }
-    return fromMinor(invoices.reduce((sum, inv) => sum + toMinor(inv.balance_amount), 0));
+    return fromMinor(invoices.reduce((sum, inv) => sum + toMinor(Number(inv.balance_amount)), 0));
 }
 
 /** Finance decision on the unused fee of the old course. Each transfer can be decided once. */
@@ -255,15 +259,15 @@ export async function reviewTransferCredit(tx: Queryable, params: { tenantId: st
         }
     }
 
-    const consumed = review.decision === 'approve' ? assessment.consumedAmount : review.consumedAmount ?? assessment.consumedAmount;
-    const eligible = consumed === null ? null : fromMinor(Math.max(0, toMinor(position.unusedCeiling) - toMinor(consumed)));
+    const consumed = review.consumedAmount ?? assessment.consumedAmount ?? 0;
+    const eligible = fromMinor(Math.max(0, toMinor(position.unusedCeiling) - toMinor(consumed)));
     let approved = 0;
     if (review.decision === 'approve') {
-        approved = review.approvedCredit ?? eligible!;
-        if (toMinor(approved) > toMinor(eligible!)) {
-            throw billingError('invalid', `Approved credit exceeds the eligible unused credit of ${eligible!.toFixed(2)}.`);
+        approved = review.approvedCredit !== null && review.approvedCredit !== undefined ? review.approvedCredit : eligible;
+        if (toMinor(approved) > toMinor(eligible)) {
+            throw billingError('invalid', `Approved credit exceeds the eligible unused credit of ${eligible.toFixed(2)}.`);
         }
-        if (toMinor(approved) < toMinor(eligible!) && !review.notes) {
+        if (toMinor(approved) < toMinor(eligible) && !review.notes) {
             throw billingError('invalid', 'Enter the reason for approving less than the eligible credit.');
         }
     }
@@ -292,7 +296,7 @@ export async function reviewTransferCredit(tx: Queryable, params: { tenantId: st
             consumedAmount: consumed, eligibleCredit: eligible, approvedCredit: approved, notes: review.notes, consumption: assessmentSnapshot(assessment),
         },
     });
-    return { creditStatus, eligibleCredit: eligible, approvedCredit: approved, consumedAmount: consumed, assessment };
+    return { creditStatus, eligibleCredit: eligible, approvedCredit: approved, consumedAmount: consumed };
 }
 
 async function getTransferStudent(db: Queryable, tenantId: string, transferId: string): Promise<string> {

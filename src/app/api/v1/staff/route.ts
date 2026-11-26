@@ -48,7 +48,24 @@ export async function GET(req: NextRequest) {
         const rows = new Map((await query<{ membership_id: string; assignments: unknown }>(
             `SELECT membership_id, profile->'assignments' AS assignments FROM tenant.memberships WHERE tenant_id = $1 AND role = 'Staff'`, [context.tenantId]))
             .map(r => [r.membership_id, readAssignments(r.assignments)]));
-        return ok(context, staff.map(m => (m.role === 'Staff' ? { ...m, assignments: rows.get(m.membershipId) ?? readAssignments(null) } : m)));
+        const all = [...rows.values()];
+        const courseNames = new Map((await query<{ course_id: string; title: string }>(
+            `SELECT course_id, title FROM academics.courses WHERE tenant_id = $1 AND course_id::text = ANY($2::text[])`, [context.tenantId, all.flatMap(a => a.courseIds)])).map(c => [c.course_id, c.title]));
+        const batchNames = new Map((await query<{ batch_id: string; course_id: string; name: string }>(
+            `SELECT b.batch_id, b.course_id, c.title || ': ' || b.name AS name FROM academics.batches b JOIN academics.courses c ON c.course_id = b.course_id
+             WHERE b.tenant_id = $1 AND b.batch_id::text = ANY($2::text[])`, [context.tenantId, all.flatMap(a => a.batchIds)])).map(b => [b.batch_id, b]));
+        return ok(context, staff.map(m => {
+            if (m.role !== 'Staff') return m;
+            const a = rows.get(m.membershipId) ?? readAssignments(null);
+            // Courses and batches that no longer exist are left out
+            const batchIds = a.batchIds.filter(id => batchNames.has(id));
+            const courseIds = a.courseIds.filter(id => courseNames.has(id));
+            const narrowed = new Set(batchIds.map(id => batchNames.get(id)!.course_id));
+            return {
+                ...m, assignments: { courseIds, batchIds },
+                assignedTo: [...courseIds.filter(id => !narrowed.has(id)).map(id => `${courseNames.get(id)}: all batches`), ...batchIds.map(id => batchNames.get(id)!.name)].sort(),
+            };
+        }));
     } catch (err) {
         return fail(err, context, req);
     }

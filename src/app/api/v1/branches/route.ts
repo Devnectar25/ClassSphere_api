@@ -19,11 +19,15 @@ export async function GET(req: NextRequest) {
             phone: string | null;
             is_primary: boolean;
             is_active: boolean;
+            head_user_id: string | null;
+            head_name: string | null;
         }>(
-            `SELECT branch_id, name, code, address, phone, is_primary, is_active
-             FROM tenant.branches
-             WHERE tenant_id = $1 AND is_active = true
-             ORDER BY is_primary DESC, name ASC`,
+            `SELECT b.branch_id, b.name, b.code, b.address, b.phone, b.is_primary, b.is_active,
+                    b.head_user_id, COALESCE(u.full_name, b.head_name) AS head_name
+             FROM tenant.branches b
+             LEFT JOIN identity_app.users u ON u.user_id = b.head_user_id
+             WHERE b.tenant_id = $1 AND b.is_active = true
+             ORDER BY b.is_primary DESC, b.name ASC`,
             [context.tenantId]
         );
         const allowed = await branchIdsInScope(context);
@@ -34,7 +38,9 @@ export async function GET(req: NextRequest) {
             address: r.address,
             phone: r.phone,
             isPrimary: r.is_primary,
-            isActive: r.is_active
+            isActive: r.is_active,
+            headUserId: r.head_user_id,
+            headName: r.head_name
         })));
     } catch (err) {
         return fail(err, context, req);
@@ -49,7 +55,7 @@ export async function POST(req: NextRequest) {
     const context = await authorize(req, 'branches.write');
     if (context instanceof Response) return context;
     try {
-        const { name, code, address, phone, headUserId, isPrimary, isActive } = await req.json();
+        const { name, code, address, phone, headUserId, headName, isPrimary, isActive } = await req.json();
         if (!name?.trim() || !code?.trim()) return problem(context, req, 400, 'Validation Error', 'Branch name and code are required.');
 
         const check = await callFn<{ allowed: boolean; maximum: number; planTier: string }>('tenant.fn_entitlement_check', context.tenantId, 'branches');
@@ -57,10 +63,26 @@ export async function POST(req: NextRequest) {
             return problem(context, req, 402, 'Subscription Entitlement Exceeded',
                 `Branch limit of ${check.maximum} reached for the ${check.planTier} plan.`);
         }
+
+        let resolvedHeadUserId: string | null = headUserId || null;
+        let resolvedHeadName: string | null = (headName && typeof headName === 'string' && headName.trim()) ? headName.trim() : null;
+
+        if (resolvedHeadUserId && !resolvedHeadName) {
+            const userRows = await query<{ full_name: string }>(`SELECT full_name FROM identity_app.users WHERE user_id = $1`, [resolvedHeadUserId]);
+            if (userRows.length > 0) resolvedHeadName = userRows[0].full_name;
+        } else if (resolvedHeadName && !resolvedHeadUserId) {
+            const matchRows = await query<{ user_id: string }>(
+                `SELECT u.user_id FROM identity_app.users u JOIN tenant.memberships m ON m.user_id = u.user_id
+                 WHERE m.tenant_id = $1 AND LOWER(TRIM(u.full_name)) = LOWER(TRIM($2)) LIMIT 1`,
+                [context.tenantId, resolvedHeadName]
+            );
+            if (matchRows.length > 0) resolvedHeadUserId = matchRows[0].user_id;
+        }
+
         const result = await callFn<{ success: boolean; branchId: string }>('tenant.fn_branch_create',
             context.tenantId, name.trim(), String(code).trim().toUpperCase(), address?.trim() || null, phone?.trim() || null, context.actorId);
 
-        if (result?.branchId && (headUserId || isPrimary || isActive === false)) {
+        if (result?.branchId) {
             await callFn('tenant.fn_branch_update',
                 context.tenantId,
                 result.branchId,
@@ -68,10 +90,15 @@ export async function POST(req: NextRequest) {
                 String(code).trim().toUpperCase(),
                 address?.trim() || null,
                 phone?.trim() || null,
-                headUserId || null,
+                resolvedHeadUserId,
                 isPrimary !== undefined ? Boolean(isPrimary) : null,
                 isActive !== undefined ? Boolean(isActive) : true,
                 context.actorId
+            );
+
+            await query(
+                `UPDATE tenant.branches SET head_name = $1 WHERE branch_id = $2 AND tenant_id = $3`,
+                [resolvedHeadName, result.branchId, context.tenantId]
             );
         }
 
@@ -88,9 +115,24 @@ export async function PUT(req: NextRequest) {
     const context = await authorize(req, 'branches.write');
     if (context instanceof Response) return context;
     try {
-        const { branchId, name, code, address, phone, headUserId, isPrimary, isActive } = await req.json();
+        const { branchId, name, code, address, phone, headUserId, headName, isPrimary, isActive } = await req.json();
         if (!branchId || !name?.trim() || !code?.trim()) {
             return problem(context, req, 400, 'Validation Error', 'Branch ID, name and code are required.');
+        }
+
+        let resolvedHeadUserId: string | null = headUserId || null;
+        let resolvedHeadName: string | null = (headName && typeof headName === 'string' && headName.trim()) ? headName.trim() : null;
+
+        if (resolvedHeadUserId && !resolvedHeadName) {
+            const userRows = await query<{ full_name: string }>(`SELECT full_name FROM identity_app.users WHERE user_id = $1`, [resolvedHeadUserId]);
+            if (userRows.length > 0) resolvedHeadName = userRows[0].full_name;
+        } else if (resolvedHeadName && !resolvedHeadUserId) {
+            const matchRows = await query<{ user_id: string }>(
+                `SELECT u.user_id FROM identity_app.users u JOIN tenant.memberships m ON m.user_id = u.user_id
+                 WHERE m.tenant_id = $1 AND LOWER(TRIM(u.full_name)) = LOWER(TRIM($2)) LIMIT 1`,
+                [context.tenantId, resolvedHeadName]
+            );
+            if (matchRows.length > 0) resolvedHeadUserId = matchRows[0].user_id;
         }
 
         const result = await callFn('tenant.fn_branch_update',
@@ -100,11 +142,17 @@ export async function PUT(req: NextRequest) {
             String(code).trim().toUpperCase(),
             address || null,
             phone || null,
-            headUserId || null,
+            resolvedHeadUserId,
             isPrimary !== undefined ? Boolean(isPrimary) : null,
             isActive !== undefined ? Boolean(isActive) : true,
             context.actorId
         );
+
+        await query(
+            `UPDATE tenant.branches SET head_name = $1 WHERE branch_id = $2 AND tenant_id = $3`,
+            [resolvedHeadName, branchId, context.tenantId]
+        );
+
         return ok(context, result);
     } catch (err) {
         return fail(err, context, req);
