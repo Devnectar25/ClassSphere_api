@@ -12,10 +12,13 @@ export async function GET(req: NextRequest) {
     const context = await authorize(req, 'academics.read');
     if (context instanceof Response) return context;
     try {
+        const branchParam = req.nextUrl.searchParams.get('branchId');
+        const effectiveBranch = context.restrictedBranchId ?? ((branchParam && branchParam !== 'all' && branchParam !== 'academy_wide') ? branchParam : null);
+
         const courses = await callFn<Array<{ courseId: string; branchId: string | null; batchCount: number; studentCount: number }>>('academics.fn_course_list', context.tenantId);
         const scope = await staffScope(context);
-        const branch = context.restrictedBranchId;
-        if (!scope && !branch) return ok(context, courses);
+        const branch = effectiveBranch;
+        if (!scope && !branch && branchParam !== 'academy_wide') return ok(context, courses);
 
         // Counted within the user's own branch and batches
         const counts = new Map((await query<{ course_id: string; batches: number; students: number }>(
@@ -24,7 +27,10 @@ export async function GET(req: NextRequest) {
              WHERE b.tenant_id = $1 AND ($2::uuid IS NULL OR b.branch_id = $2::uuid) AND ($3::uuid[] IS NULL OR b.batch_id = ANY($3::uuid[]))
              GROUP BY b.course_id`, [context.tenantId, branch, scope?.batchIds ?? null])).map(r => [r.course_id, r]));
         return ok(context, courses
-            .filter(c => (scope ? scope.courseIds.includes(c.courseId) : !c.branchId || c.branchId === branch || counts.has(c.courseId)))
+            .filter(c => {
+                if (branchParam === 'academy_wide') return !c.branchId;
+                return (scope ? scope.courseIds.includes(c.courseId) : !c.branchId || c.branchId === branch || counts.has(c.courseId));
+            })
             .map(c => ({ ...c, batchCount: counts.get(c.courseId)?.batches ?? 0, studentCount: counts.get(c.courseId)?.students ?? 0 })));
     } catch (err) {
         return fail(err, context, req);
@@ -65,7 +71,7 @@ export async function POST(req: NextRequest) {
             context.tenantId, title.trim(), cleanCode, category.trim(), cleanLevel, durationMonths ? Number(durationMonths) : null,
             Number(tuitionAmount ?? 0), billingPeriod || 'monthly', description || null, subjectList, context.actorId);
 
-        const safeBranchId = branchId && branchId !== 'all' ? String(branchId).trim() : null;
+        const safeBranchId = context.restrictedBranchId || (branchId && branchId !== 'all' ? String(branchId).trim() : null);
         const safeStartDate = startDate && String(startDate).trim() ? String(startDate).trim() : null;
         if (result?.courseId) {
             await query(
@@ -128,7 +134,10 @@ export async function PUT(req: NextRequest) {
         );
 
         if (branchId !== undefined || startDate !== undefined || completionPolicy !== undefined) {
-            const safeBranchId = branchId && branchId !== 'all' ? String(branchId).trim() : null;
+            if (context.restrictedBranchId && branchId && branchId !== 'all' && branchId !== context.restrictedBranchId) {
+                return problem(context, req, 403, 'Forbidden', 'Cannot move course to another branch.');
+            }
+            const safeBranchId = context.restrictedBranchId || (branchId && branchId !== 'all' ? String(branchId).trim() : null);
             const safeStartDate = startDate && String(startDate).trim() ? String(startDate).trim() : null;
             await query(
                 `UPDATE academics.courses 
